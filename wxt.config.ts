@@ -6,6 +6,6 @@ export default defineConfig({
   manifest: {
     name: 'Tab Manager',
     description: '标签页管理工具 - 类似 Toby',
-    permissions: ['tabs', 'storage', 'contextMenus'],
+    permissions: ['tabs', 'storage', 'bookmarks', 'contextMenus'],
   },
 });

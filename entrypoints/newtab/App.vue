@@ -1,7 +1,23 @@
 <script lang="ts" setup>
 import { ref, onMounted, watch, nextTick, computed } from 'vue';
 import type { Collection, TabItem, Group } from './types';
-import { loadCollections, saveCollections, loadGroups, saveGroups, generateId, debugStorage, loadSidebarWidths, saveSidebarWidths } from './storage';
+import { 
+  loadCollections, 
+  loadGroups, 
+  createGroup as createGroupInBookmarks,
+  deleteGroup as deleteGroupInBookmarks,
+  updateGroup as updateGroupInBookmarks,
+  createCollection as createCollectionInBookmarks,
+  deleteCollection as deleteCollectionInBookmarks,
+  updateCollection as updateCollectionInBookmarks,
+  addTabToCollection,
+  removeTabFromCollection,
+  moveTab,
+  moveGroupToIndex,
+  debugStorage, 
+  loadSidebarWidths, 
+  saveSidebarWidths 
+} from './storage';
 
 // 定义 Tab 类型
 interface BrowserTab {
@@ -181,43 +197,37 @@ onMounted(async () => {
   }
 });
 
-watch(collections, async (newVal) => {
-  // 只有在数据加载完成后才保存
-  if (!isLoading.value && Array.isArray(newVal)) {
-    await saveCollections(newVal);
-  }
-}, { deep: true });
-
-watch(groups, async (newVal) => {
-  // 只有在数据加载完成后才保存
-  if (!isLoading.value && Array.isArray(newVal)) {
-    await saveGroups(newVal);
-  }
-}, { deep: true });
+// 书签 API 是实时的，不需要 watch 自动保存
 
 // 创建新分组
-function createGroup() {
+async function createGroup() {
   if (!newGroupName.value.trim()) return;
   
-  const newGroup: Group = {
-    id: generateId(),
-    name: newGroupName.value.trim(),
-    createdAt: Date.now(),
-  };
-  
-  groups.value.push(newGroup);
-  selectedGroupId.value = newGroup.id;
-  newGroupName.value = '';
-  showAddGroup.value = false;
+  try {
+    const newGroup = await createGroupInBookmarks(newGroupName.value.trim());
+    groups.value.push(newGroup);
+    selectedGroupId.value = newGroup.id;
+    newGroupName.value = '';
+    showAddGroup.value = false;
+  } catch (e) {
+    console.error('Failed to create group:', e);
+    alert('创建分组失败');
+  }
 }
 
 // 删除分组
-function deleteGroup(id: string) {
+async function deleteGroup(id: string) {
   if (confirm('确定删除这个分组吗？分组内的集合也会被删除。')) {
-    collections.value = collections.value.filter(c => c.groupId !== id);
-    groups.value = groups.value.filter(g => g.id !== id);
-    if (selectedGroupId.value === id) {
-      selectedGroupId.value = groups.value[0]?.id || '';
+    try {
+      await deleteGroupInBookmarks(id);
+      collections.value = collections.value.filter(c => c.groupId !== id);
+      groups.value = groups.value.filter(g => g.id !== id);
+      if (selectedGroupId.value === id) {
+        selectedGroupId.value = groups.value[0]?.id || '';
+      }
+    } catch (e) {
+      console.error('Failed to delete group:', e);
+      alert('删除分组失败');
     }
   }
 }
@@ -229,9 +239,14 @@ function startEditGroup(group: Group) {
 }
 
 // 保存分组名称
-function saveGroupName(group: Group) {
+async function saveGroupName(group: Group) {
   if (editingName.value.trim()) {
-    group.name = editingName.value.trim();
+    try {
+      await updateGroupInBookmarks(group.id, editingName.value.trim());
+      group.name = editingName.value.trim();
+    } catch (e) {
+      console.error('Failed to update group name:', e);
+    }
   }
   editingGroupId.value = null;
 }
@@ -252,7 +267,7 @@ function onGroupDragOver(groupId: string, event: DragEvent) {
 }
 
 // 分组放置（排序）
-function onGroupDrop(targetGroupId: string, event: DragEvent) {
+async function onGroupDrop(targetGroupId: string, event: DragEvent) {
   event.preventDefault();
   
   if (!draggedGroup.value || draggedGroup.value === targetGroupId) {
@@ -265,8 +280,16 @@ function onGroupDrop(targetGroupId: string, event: DragEvent) {
   const targetIndex = groups.value.findIndex(g => g.id === targetGroupId);
   
   if (sourceIndex > -1 && targetIndex > -1) {
+    const movedGroupId = draggedGroup.value;
     const [movedGroup] = groups.value.splice(sourceIndex, 1);
     groups.value.splice(targetIndex, 0, movedGroup);
+    
+    // 同步到书签
+    try {
+      await moveGroupToIndex(movedGroupId, targetIndex);
+    } catch (e) {
+      console.error('Failed to sync group order to bookmarks:', e);
+    }
   }
   
   draggedGroup.value = null;
@@ -280,25 +303,30 @@ function onGroupDragEnd() {
 }
 
 // 创建新集合
-function createCollection() {
+async function createCollection() {
   if (!newCollectionName.value.trim() || !selectedGroupId.value) return;
   
-  collections.value.push({
-    id: generateId(),
-    name: newCollectionName.value.trim(),
-    tabs: [],
-    createdAt: Date.now(),
-    groupId: selectedGroupId.value,
-  });
-  
-  newCollectionName.value = '';
-  showAddCollection.value = false;
+  try {
+    const newCollection = await createCollectionInBookmarks(newCollectionName.value.trim(), selectedGroupId.value);
+    collections.value.push(newCollection);
+    newCollectionName.value = '';
+    showAddCollection.value = false;
+  } catch (e) {
+    console.error('Failed to create collection:', e);
+    alert('创建集合失败');
+  }
 }
 
 // 删除集合
-function deleteCollection(id: string) {
+async function deleteCollection(id: string) {
   if (confirm('确定删除这个集合吗？')) {
-    collections.value = collections.value.filter(c => c.id !== id);
+    try {
+      await deleteCollectionInBookmarks(id);
+      collections.value = collections.value.filter(c => c.id !== id);
+    } catch (e) {
+      console.error('Failed to delete collection:', e);
+      alert('删除集合失败');
+    }
   }
 }
 
@@ -309,9 +337,14 @@ function startEditCollection(collection: Collection) {
 }
 
 // 保存集合名称
-function saveCollectionName(collection: Collection) {
+async function saveCollectionName(collection: Collection) {
   if (editingName.value.trim()) {
-    collection.name = editingName.value.trim();
+    try {
+      await updateCollectionInBookmarks(collection.id, editingName.value.trim());
+      collection.name = editingName.value.trim();
+    } catch (e) {
+      console.error('Failed to update collection name:', e);
+    }
   }
   editingCollectionId.value = null;
 }
@@ -331,16 +364,20 @@ async function saveCurrentTabs(collectionId: string) {
   if (collection) {
     const existingUrls = new Set(collection.tabs.map(t => t.url));
     
-    const newTabs: TabItem[] = tabs
-      .filter((tab) => isValidTabUrl(tab.url) && !existingUrls.has(tab.url!))
-      .map((tab) => ({
-        id: generateId(),
-        title: tab.title || 'Untitled',
-        url: tab.url!,
-        favicon: tab.favIconUrl || '',
-      }));
-    
-    collection.tabs.push(...newTabs);
+    for (const tab of tabs) {
+      if (isValidTabUrl(tab.url) && !existingUrls.has(tab.url!)) {
+        try {
+          const newTab = await addTabToCollection(collectionId, {
+            title: tab.title || 'Untitled',
+            url: tab.url!,
+            favicon: tab.favIconUrl || '',
+          });
+          collection.tabs.push(newTab);
+        } catch (e) {
+          console.error('Failed to add tab:', e);
+        }
+      }
+    }
   }
 }
 
@@ -357,10 +394,15 @@ function openTab(url: string) {
 }
 
 // 删除标签
-function deleteTab(collectionId: string, tabId: string) {
+async function deleteTab(collectionId: string, tabId: string) {
   const collection = collections.value.find(c => c.id === collectionId);
   if (collection) {
-    collection.tabs = collection.tabs.filter(t => t.id !== tabId);
+    try {
+      await removeTabFromCollection(tabId);
+      collection.tabs = collection.tabs.filter(t => t.id !== tabId);
+    } catch (e) {
+      console.error('Failed to delete tab:', e);
+    }
   }
 }
 
@@ -371,12 +413,17 @@ function startEditTab(collectionId: string, tab: TabItem) {
 }
 
 // 保存标签名称
-function saveTabName(collectionId: string, tabId: string) {
+async function saveTabName(collectionId: string, tabId: string) {
   const collection = collections.value.find(c => c.id === collectionId);
   if (collection) {
     const tab = collection.tabs.find(t => t.id === tabId);
     if (tab && editingName.value.trim()) {
-      tab.title = editingName.value.trim();
+      try {
+        await browser.bookmarks.update(tabId, { title: editingName.value.trim() });
+        tab.title = editingName.value.trim();
+      } catch (e) {
+        console.error('Failed to update tab name:', e);
+      }
     }
   }
   editingTabId.value = null;
@@ -422,7 +469,7 @@ function onTabDragOver(collectionId: string, tabId: string, event: DragEvent) {
 }
 
 // 标签放置（排序或移动）
-function onTabDrop(collectionId: string, targetTabId: string, event: DragEvent) {
+async function onTabDrop(collectionId: string, targetTabId: string, event: DragEvent) {
   event.preventDefault();
   event.stopPropagation();
   
@@ -435,17 +482,20 @@ function onTabDrop(collectionId: string, targetTabId: string, event: DragEvent) 
     if (tab.url && isValidTabUrl(tab.url)) {
       const exists = collection.tabs.some(t => t.url === tab.url);
       if (!exists) {
-        const targetIndex = collection.tabs.findIndex(t => t.id === targetTabId);
-        const newTab = {
-          id: generateId(),
-          title: tab.title || tab.url,
-          url: tab.url,
-          favicon: tab.favIconUrl || '',
-        };
-        if (targetIndex > -1) {
-          collection.tabs.splice(targetIndex, 0, newTab);
-        } else {
-          collection.tabs.push(newTab);
+        try {
+          const targetIndex = collection.tabs.findIndex(t => t.id === targetTabId);
+          const newTab = await addTabToCollection(collectionId, {
+            title: tab.title || tab.url,
+            url: tab.url,
+            favicon: tab.favIconUrl || '',
+          });
+          if (targetIndex > -1) {
+            collection.tabs.splice(targetIndex, 0, newTab);
+          } else {
+            collection.tabs.push(newTab);
+          }
+        } catch (e) {
+          console.error('Failed to add tab:', e);
         }
       }
     }
@@ -459,7 +509,7 @@ function onTabDrop(collectionId: string, targetTabId: string, event: DragEvent) 
     const { collectionId: sourceCollectionId, tabId: sourceTabId } = draggedTab.value;
     
     if (sourceCollectionId === collectionId) {
-      // 同一集合内排序
+      // 同一集合内排序 - 书签API不支持排序，只更新本地状态
       const sourceIndex = collection.tabs.findIndex(t => t.id === sourceTabId);
       const targetIndex = collection.tabs.findIndex(t => t.id === targetTabId);
       
@@ -479,11 +529,16 @@ function onTabDrop(collectionId: string, targetTabId: string, event: DragEvent) 
         const exists = collection.tabs.some(t => t.url === sourceTab?.url);
         
         if (sourceIndex > -1 && !exists) {
-          const [movedTab] = sourceCollection.tabs.splice(sourceIndex, 1);
-          if (targetIndex > -1) {
-            collection.tabs.splice(targetIndex, 0, movedTab);
-          } else {
-            collection.tabs.push(movedTab);
+          try {
+            await moveTab(sourceTabId, collectionId);
+            const [movedTab] = sourceCollection.tabs.splice(sourceIndex, 1);
+            if (targetIndex > -1) {
+              collection.tabs.splice(targetIndex, 0, movedTab);
+            } else {
+              collection.tabs.push(movedTab);
+            }
+          } catch (e) {
+            console.error('Failed to move tab:', e);
           }
         }
       }
@@ -540,7 +595,7 @@ function onDragOverCollection(collectionId: string, event: DragEvent) {
 }
 
 // 放置到集合
-function onDropToCollection(targetCollectionId: string, event: DragEvent) {
+async function onDropToCollection(targetCollectionId: string, event: DragEvent) {
   event.preventDefault();
   
   const targetCollection = collections.value.find(c => c.id === targetCollectionId);
@@ -551,12 +606,16 @@ function onDropToCollection(targetCollectionId: string, event: DragEvent) {
     if (tab.url && isValidTabUrl(tab.url)) {
       const exists = targetCollection.tabs.some(t => t.url === tab.url);
       if (!exists) {
-        targetCollection.tabs.push({
-          id: generateId(),
-          title: tab.title || tab.url,
-          url: tab.url,
-          favicon: tab.favIconUrl || '',
-        });
+        try {
+          const newTab = await addTabToCollection(targetCollectionId, {
+            title: tab.title || tab.url,
+            url: tab.url,
+            favicon: tab.favIconUrl || '',
+          });
+          targetCollection.tabs.push(newTab);
+        } catch (e) {
+          console.error('Failed to add tab:', e);
+        }
       }
     }
     draggedOpenTab.value = null;
@@ -582,8 +641,13 @@ function onDropToCollection(targetCollectionId: string, event: DragEvent) {
         // 检查目标集合是否已有相同 URL
         const exists = targetCollection.tabs.some(t => t.url === sourceTab.url);
         if (!exists) {
-          const [tab] = sourceCollection.tabs.splice(tabIndex, 1);
-          targetCollection.tabs.push(tab);
+          try {
+            await moveTab(tabId, targetCollectionId);
+            const [tab] = sourceCollection.tabs.splice(tabIndex, 1);
+            targetCollection.tabs.push(tab);
+          } catch (e) {
+            console.error('Failed to move tab:', e);
+          }
         }
       }
     }
@@ -605,65 +669,7 @@ function getFaviconUrl(url: string, favicon: string): string {
   }
 }
 
-// 导出数据
-function exportData() {
-  const data = {
-    version: 1,
-    exportedAt: new Date().toISOString(),
-    groups: groups.value,
-    collections: collections.value,
-  };
-  
-  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `tab-manager-backup-${new Date().toISOString().slice(0, 10)}.json`;
-  a.click();
-  URL.revokeObjectURL(url);
-}
 
-// 导入数据
-const fileInput = ref<HTMLInputElement | null>(null);
-
-function triggerImport() {
-  fileInput.value?.click();
-}
-
-function importData(event: Event) {
-  const input = event.target as HTMLInputElement;
-  const file = input.files?.[0];
-  if (!file) return;
-  
-  const reader = new FileReader();
-  reader.onload = (e) => {
-    try {
-      const data = JSON.parse(e.target?.result as string);
-      
-      if (data.groups && Array.isArray(data.groups)) {
-        // 合并分组，避免重复
-        const existingGroupIds = new Set(groups.value.map(g => g.id));
-        const newGroups = data.groups.filter((g: Group) => !existingGroupIds.has(g.id));
-        groups.value.push(...newGroups);
-      }
-      
-      if (data.collections && Array.isArray(data.collections)) {
-        // 合并集合，避免重复
-        const existingCollectionIds = new Set(collections.value.map(c => c.id));
-        const newCollections = data.collections.filter((c: Collection) => !existingCollectionIds.has(c.id));
-        collections.value.push(...newCollections);
-      }
-      
-      alert('导入成功！');
-    } catch (err) {
-      alert('导入失败：文件格式不正确');
-    }
-  };
-  reader.readAsText(file);
-  
-  // 清空 input 以便再次选择同一文件
-  input.value = '';
-}
 </script>
 
 <template>
@@ -712,23 +718,10 @@ function importData(event: Event) {
       <header class="header">
         <h1>Tab Manager</h1>
         <div class="header-actions">
-          <button class="btn-icon-text" @click="triggerImport" title="导入">
-            📥
-          </button>
-          <button class="btn-icon-text" @click="exportData" title="导出">
-            📤
-          </button>
           <button class="btn-primary" @click="showAddCollection = true" :disabled="!selectedGroupId">
             + 新建集合
           </button>
         </div>
-        <input 
-          ref="fileInput" 
-          type="file" 
-          accept=".json" 
-          style="display: none" 
-          @change="importData"
-        />
       </header>
 
       <!-- 集合列表（双列） -->
