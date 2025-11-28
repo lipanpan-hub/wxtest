@@ -149,9 +149,9 @@ watch(showAddGroup, async (val) => {
   }
 });
 
-// 加载当前打开的标签
+// 加载当前打开的标签（所有窗口）
 async function loadOpenTabs() {
-  const tabs = await browser.tabs.query({ currentWindow: true });
+  const tabs = await browser.tabs.query({});
   openTabs.value = tabs.filter((tab) => {
     if (!tab.url) return false;
     const excludeUrls = ['chrome://', 'chrome-extension://', 'about:', 'edge://', 'brave://'];
