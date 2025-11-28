@@ -1,7 +1,29 @@
-# WXT + Vue 3
+# Tab Manager - 标签页管理工具
 
-This template should help get you started developing with Vue 3 in WXT.
+一个简洁的浏览器标签页管理扩展，帮助你整理和保存常用标签。
 
-## Recommended IDE Setup
+## 下载安装
 
-- [VS Code](https://code.visualstudio.com/) + [Volar](https://marketplace.visualstudio.com/items?itemName=Vue.volar).
+### 第一步：下载插件
+
+前往 [Releases 页面](../../releases) 下载最新版本的 `.zip` 文件，下载后解压到任意文件夹。
+
+### 第二步：安装到浏览器
+
+**Chrome / Edge 浏览器：**
+
+1. 打开浏览器，地址栏输入：
+   - Chrome: `chrome://extensions/`
+   - Edge: `edge://extensions/`
+2. 打开右上角的 **「开发者模式」** 开关
+3. 点击 **「加载已解压的扩展程序」**
+4. 选择刚才解压出来的文件夹
+5. 完成！
+
+## 使用方法
+
+安装成功后，打开一个新标签页就能看到 Tab Manager 界面了！
+
+- 把想保存的标签拖到分组里
+- 点击已保存的标签可以快速打开
+- 右键有更多选项
