@@ -12,6 +12,53 @@ function isBookmarksAvailable(): boolean {
          typeof browser.bookmarks.create !== 'undefined';
 }
 
+// 获取书签栏的根文件夹ID（兼容不同浏览器）
+async function getBookmarkRootId(): Promise<string> {
+  try {
+    // 获取整个书签树
+    const tree = await browser.bookmarks.getTree();
+    const root = tree[0];
+    
+    if (root && root.children && root.children.length > 0) {
+      // 优先查找 "其他书签" 或 "Other Bookmarks"
+      // Chrome/Edge: 通常是 children[1] (id='2')
+      // Firefox: 查找 'unfiled_____' 或 'menu________'
+      
+      for (const child of root.children) {
+        // Firefox 的 unfiled 书签
+        if (child.id === 'unfiled_____') {
+          return child.id;
+        }
+        // Firefox 的菜单书签
+        if (child.id === 'menu________') {
+          return child.id;
+        }
+      }
+      
+      // Chrome/Edge: 尝试使用 '2' (其他书签)
+      for (const child of root.children) {
+        if (child.id === '2') {
+          return child.id;
+        }
+      }
+      
+      // 如果都没找到，使用第一个可用的文件夹
+      for (const child of root.children) {
+        if (!child.url) { // 是文件夹
+          return child.id;
+        }
+      }
+    }
+    
+    // 最后的回退：返回 '1' (书签栏) 或 '2' (其他书签)
+    return '1';
+  } catch (e) {
+    console.error('Failed to get bookmark root:', e);
+    // 回退到 Chrome 默认值
+    return '2';
+  }
+}
+
 // 获取或创建 TabManager 根文件夹
 async function getOrCreateRootFolder(): Promise<string> {
   if (rootFolderId) {
@@ -33,11 +80,11 @@ async function getOrCreateRootFolder(): Promise<string> {
     return rootFolderId;
   }
 
-  // 在"其他书签"下创建根文件夹
-  // Chrome: '2' 是其他书签, Firefox: 'unfiled_____' 或 'other'
-  const otherBookmarksId = '2';
+  // 动态获取合适的父文件夹ID
+  const parentId = await getBookmarkRootId();
+  
   const folder = await browser.bookmarks.create({
-    parentId: otherBookmarksId,
+    parentId: parentId,
     title: ROOT_FOLDER_NAME
   });
   
