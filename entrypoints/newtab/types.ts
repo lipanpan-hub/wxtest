@@ -11,6 +11,7 @@ export interface Collection {
   tabs: TabItem[];
   createdAt: number;
   groupId: string; // 所属分组ID
+  expanded?: boolean; // 是否放大显示
 }
 
 export interface Group {

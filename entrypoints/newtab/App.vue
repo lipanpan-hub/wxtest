@@ -16,7 +16,12 @@ import {
   moveGroupToIndex,
   debugStorage, 
   loadSidebarWidths, 
-  saveSidebarWidths 
+  saveSidebarWidths,
+  loadCollectionUIStates,
+  saveCollectionUIStates,
+  updateCollectionUIState,
+  removeCollectionUIState,
+  type CollectionUIStates
 } from './storage';
 
 // 定义 Tab 类型
@@ -172,13 +177,30 @@ onMounted(async () => {
     
     const loadedGroups = await loadGroups();
     const loadedCollections = await loadCollections();
+    const uiStates = await loadCollectionUIStates();
     
     console.log('Loaded groups:', loadedGroups);
     console.log('Loaded collections:', loadedCollections);
+    console.log('Loaded UI states:', uiStates);
     
     // 确保是数组
     groups.value = Array.isArray(loadedGroups) ? loadedGroups : [];
-    collections.value = Array.isArray(loadedCollections) ? loadedCollections : [];
+    
+    // 应用 UI 状态到集合
+    let collectionsWithState = Array.isArray(loadedCollections) ? loadedCollections : [];
+    collectionsWithState = collectionsWithState.map(c => ({
+      ...c,
+      expanded: uiStates[c.id]?.expanded || false
+    }));
+    
+    // 按保存的顺序排序集合
+    collectionsWithState.sort((a, b) => {
+      const orderA = uiStates[a.id]?.order ?? Infinity;
+      const orderB = uiStates[b.id]?.order ?? Infinity;
+      return orderA - orderB;
+    });
+    
+    collections.value = collectionsWithState;
     
     // 默认选中第一个分组
     if (groups.value.length > 0) {
@@ -322,12 +344,20 @@ async function deleteCollection(id: string) {
   if (confirm('确定删除这个集合吗？')) {
     try {
       await deleteCollectionInBookmarks(id);
+      await removeCollectionUIState(id);
       collections.value = collections.value.filter(c => c.id !== id);
     } catch (e) {
       console.error('Failed to delete collection:', e);
       alert('删除集合失败');
     }
   }
+}
+
+// 切换集合放大/缩小状态
+async function toggleCollectionExpand(collection: Collection) {
+  collection.expanded = !collection.expanded;
+  // 保存展开状态
+  await updateCollectionUIState(collection.id, { expanded: collection.expanded });
 }
 
 // 开始编辑集合名称
@@ -567,7 +597,7 @@ function onCollectionDragOver(collectionId: string, event: DragEvent) {
 }
 
 // 集合放置（排序）
-function onCollectionDrop(targetCollectionId: string, event: DragEvent) {
+async function onCollectionDrop(targetCollectionId: string, event: DragEvent) {
   event.preventDefault();
   
   if (!draggedCollection.value || draggedCollection.value === targetCollectionId) {
@@ -582,10 +612,26 @@ function onCollectionDrop(targetCollectionId: string, event: DragEvent) {
   if (sourceIndex > -1 && targetIndex > -1) {
     const [movedCollection] = collections.value.splice(sourceIndex, 1);
     collections.value.splice(targetIndex, 0, movedCollection);
+    
+    // 保存集合顺序
+    await saveCollectionOrder();
   }
   
   draggedCollection.value = null;
   dragOverCollectionForSort.value = null;
+}
+
+// 保存集合顺序
+async function saveCollectionOrder() {
+  const states = await loadCollectionUIStates();
+  collections.value.forEach((c, index) => {
+    states[c.id] = {
+      ...states[c.id],
+      expanded: c.expanded || false,
+      order: index
+    };
+  });
+  await saveCollectionUIStates(states);
 }
 
 // 拖拽经过集合
@@ -734,7 +780,8 @@ function getFaviconUrl(url: string, favicon: string): string {
           :class="{ 
             'drag-over': dragOverCollectionId === collection.id,
             'drag-over-sort': dragOverCollectionForSort === collection.id,
-            'dragging': draggedCollection === collection.id
+            'dragging': draggedCollection === collection.id,
+            'expanded': collection.expanded
           }"
           draggable="true"
           @dragstart="onCollectionDragStart(collection.id, $event)"
@@ -758,6 +805,9 @@ function getFaviconUrl(url: string, favicon: string): string {
               <h3 @dblclick="startEditCollection(collection)">{{ collection.name }}</h3>
             </template>
             <div class="collection-actions">
+              <button class="btn-icon" :title="collection.expanded ? '缩小' : '放大'" @click="toggleCollectionExpand(collection)">
+                {{ collection.expanded ? '🗗' : '🗖' }}
+              </button>
               <button class="btn-icon" title="保存当前标签" @click="saveCurrentTabs(collection.id)">📥</button>
               <button class="btn-icon" title="打开所有" @click="openAllTabs(collection)">🚀</button>
               <button class="btn-icon" title="删除集合" @click="deleteCollection(collection.id)">🗑️</button>
@@ -1372,6 +1422,18 @@ function getFaviconUrl(url: string, favicon: string): string {
   box-shadow: 0 0 24px rgba(166, 227, 161, 0.25);
 }
 
+/* 放大的集合卡片 - 占据两列宽度 */
+.collection-card.expanded {
+  column-span: all;
+  background: rgba(30, 30, 46, 0.85);
+}
+
+.collection-card.expanded .tabs-list {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.5rem;
+}
+
 .collection-header {
   display: flex;
   justify-content: space-between;
@@ -1439,6 +1501,9 @@ function getFaviconUrl(url: string, favicon: string): string {
   cursor: grab;
   transition: all 0.15s ease;
   border: 1px solid transparent;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 .tab-item:hover {
@@ -1472,6 +1537,7 @@ function getFaviconUrl(url: string, favicon: string): string {
   font-size: 0.85rem;
   cursor: pointer;
   color: #cdd6f4;
+  min-width: 0;
 }
 
 .tab-title:hover {

@@ -289,3 +289,59 @@ export async function debugStorage(): Promise<void> {
     console.error('Failed to get bookmark tree:', e);
   }
 }
+
+// ============ 集合 UI 状态存储 ============
+
+export interface CollectionUIState {
+  expanded: boolean;
+  order: number; // 在分组内的排序位置
+}
+
+export interface CollectionUIStates {
+  [collectionId: string]: CollectionUIState;
+}
+
+const COLLECTION_UI_STATES_KEY = 'tabmanager_collection_ui_states';
+
+export async function loadCollectionUIStates(): Promise<CollectionUIStates> {
+  if (!isStorageAvailable()) return {};
+  
+  try {
+    const result = await browser.storage.local.get(COLLECTION_UI_STATES_KEY);
+    return result[COLLECTION_UI_STATES_KEY] || {};
+  } catch (e) {
+    console.error('Failed to load collection UI states:', e);
+    return {};
+  }
+}
+
+export async function saveCollectionUIStates(states: CollectionUIStates): Promise<void> {
+  if (!isStorageAvailable()) return;
+  
+  try {
+    await browser.storage.local.set({ [COLLECTION_UI_STATES_KEY]: states });
+  } catch (e) {
+    console.error('Failed to save collection UI states:', e);
+  }
+}
+
+// 更新单个集合的 UI 状态
+export async function updateCollectionUIState(
+  collectionId: string, 
+  state: Partial<CollectionUIState>
+): Promise<void> {
+  const states = await loadCollectionUIStates();
+  const existing = states[collectionId] || { expanded: false, order: 0 };
+  states[collectionId] = {
+    ...existing,
+    ...state
+  };
+  await saveCollectionUIStates(states);
+}
+
+// 删除集合时清理 UI 状态
+export async function removeCollectionUIState(collectionId: string): Promise<void> {
+  const states = await loadCollectionUIStates();
+  delete states[collectionId];
+  await saveCollectionUIStates(states);
+}
