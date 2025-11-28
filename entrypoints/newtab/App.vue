@@ -103,6 +103,10 @@ const dragOverCollectionForSort = ref<string | null>(null);
 // 标签排序状态
 const dragOverTabId = ref<string | null>(null);
 
+// 分组拖拽排序状态
+const draggedGroup = ref<string | null>(null);
+const dragOverGroupId = ref<string | null>(null);
+
 // 当前分组的集合（按顺序）
 const currentCollections = computed(() => {
   if (!selectedGroupId.value) return [];
@@ -230,6 +234,49 @@ function saveGroupName(group: Group) {
     group.name = editingName.value.trim();
   }
   editingGroupId.value = null;
+}
+
+// 分组拖拽开始
+function onGroupDragStart(groupId: string, event: DragEvent) {
+  draggedGroup.value = groupId;
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move';
+  }
+}
+
+// 分组拖拽经过
+function onGroupDragOver(groupId: string, event: DragEvent) {
+  if (!draggedGroup.value || draggedGroup.value === groupId) return;
+  event.preventDefault();
+  dragOverGroupId.value = groupId;
+}
+
+// 分组放置（排序）
+function onGroupDrop(targetGroupId: string, event: DragEvent) {
+  event.preventDefault();
+  
+  if (!draggedGroup.value || draggedGroup.value === targetGroupId) {
+    draggedGroup.value = null;
+    dragOverGroupId.value = null;
+    return;
+  }
+  
+  const sourceIndex = groups.value.findIndex(g => g.id === draggedGroup.value);
+  const targetIndex = groups.value.findIndex(g => g.id === targetGroupId);
+  
+  if (sourceIndex > -1 && targetIndex > -1) {
+    const [movedGroup] = groups.value.splice(sourceIndex, 1);
+    groups.value.splice(targetIndex, 0, movedGroup);
+  }
+  
+  draggedGroup.value = null;
+  dragOverGroupId.value = null;
+}
+
+// 分组拖拽结束
+function onGroupDragEnd() {
+  draggedGroup.value = null;
+  dragOverGroupId.value = null;
 }
 
 // 创建新集合
@@ -810,8 +857,18 @@ function importData(event: Event) {
           v-for="group in groups"
           :key="group.id"
           class="group-item"
-          :class="{ active: selectedGroupId === group.id }"
+          :class="{ 
+            active: selectedGroupId === group.id,
+            'drag-over-group': dragOverGroupId === group.id,
+            'dragging-group': draggedGroup === group.id
+          }"
+          draggable="true"
           @click="selectedGroupId = group.id"
+          @dragstart="onGroupDragStart(group.id, $event)"
+          @dragover="onGroupDragOver(group.id, $event)"
+          @dragleave="dragOverGroupId = null"
+          @drop="onGroupDrop(group.id, $event)"
+          @dragend="onGroupDragEnd"
         >
           <template v-if="editingGroupId === group.id">
             <input
@@ -1061,9 +1118,13 @@ function importData(event: Event) {
   padding: 0.7rem 0.6rem;
   border-radius: 8px;
   background: rgba(147, 153, 178, 0.08);
-  cursor: pointer;
+  cursor: grab;
   transition: all 0.2s;
   border: 1px solid transparent;
+}
+
+.group-item:active {
+  cursor: grabbing;
 }
 
 .group-item:hover {
@@ -1073,6 +1134,17 @@ function importData(event: Event) {
 .group-item.active {
   background: rgba(137, 180, 250, 0.2);
   border-color: rgba(137, 180, 250, 0.4);
+}
+
+.group-item.dragging-group {
+  opacity: 0.5;
+  cursor: grabbing;
+}
+
+.group-item.drag-over-group {
+  border-color: #a6e3a1;
+  background: rgba(166, 227, 161, 0.15);
+  box-shadow: 0 0 12px rgba(166, 227, 161, 0.2);
 }
 
 .group-name {
