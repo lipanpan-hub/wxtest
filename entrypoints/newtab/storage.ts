@@ -284,14 +284,21 @@ export async function saveCollections(collections: Collection[]): Promise<void> 
   console.log('saveCollections called - bookmarks are saved in real-time');
 }
 
-// ============ 侧边栏宽度仍用 storage.local ============
+// ============ 侧边栏状态仍用 storage.local ============
 
 export interface SidebarWidths {
   left: number;
   right: number;
 }
 
+export interface SidebarState {
+  leftCollapsed: boolean;
+  rightCollapsed: boolean;
+  selectedGroupId: string;
+}
+
 const SIDEBAR_WIDTHS_KEY = 'tabmanager_sidebar_widths';
+const SIDEBAR_STATE_KEY = 'tabmanager_sidebar_state';
 
 function isStorageAvailable(): boolean {
   return typeof browser !== 'undefined' && 
@@ -318,6 +325,30 @@ export async function saveSidebarWidths(widths: SidebarWidths): Promise<void> {
     await browser.storage.local.set({ [SIDEBAR_WIDTHS_KEY]: widths });
   } catch (e) {
     console.error('Failed to save sidebar widths:', e);
+  }
+}
+
+// 加载侧边栏折叠状态和选中分组
+export async function loadSidebarState(): Promise<SidebarState | null> {
+  if (!isStorageAvailable()) return null;
+  
+  try {
+    const result = await browser.storage.local.get(SIDEBAR_STATE_KEY);
+    return result[SIDEBAR_STATE_KEY] || null;
+  } catch (e) {
+    console.error('Failed to load sidebar state:', e);
+    return null;
+  }
+}
+
+// 保存侧边栏折叠状态和选中分组
+export async function saveSidebarState(state: SidebarState): Promise<void> {
+  if (!isStorageAvailable()) return;
+  
+  try {
+    await browser.storage.local.set({ [SIDEBAR_STATE_KEY]: state });
+  } catch (e) {
+    console.error('Failed to save sidebar state:', e);
   }
 }
 

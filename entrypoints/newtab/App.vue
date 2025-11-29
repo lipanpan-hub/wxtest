@@ -17,6 +17,8 @@ import {
   debugStorage, 
   loadSidebarWidths, 
   saveSidebarWidths,
+  loadSidebarState,
+  saveSidebarState,
   loadCollectionUIStates,
   saveCollectionUIStates,
   updateCollectionUIState,
@@ -175,6 +177,13 @@ onMounted(async () => {
       rightSidebarWidth.value = savedWidths.right;
     }
     
+    // 加载侧边栏折叠状态和选中分组
+    const savedState = await loadSidebarState();
+    if (savedState) {
+      showOpenTabs.value = !savedState.leftCollapsed;
+      showGroups.value = !savedState.rightCollapsed;
+    }
+    
     const loadedGroups = await loadGroups();
     const loadedCollections = await loadCollections();
     const uiStates = await loadCollectionUIStates();
@@ -202,8 +211,10 @@ onMounted(async () => {
     
     collections.value = collectionsWithState;
     
-    // 默认选中第一个分组
-    if (groups.value.length > 0) {
+    // 恢复选中的分组，如果保存的分组不存在则选中第一个
+    if (savedState?.selectedGroupId && groups.value.some(g => g.id === savedState.selectedGroupId)) {
+      selectedGroupId.value = savedState.selectedGroupId;
+    } else if (groups.value.length > 0) {
       selectedGroupId.value = groups.value[0].id;
     }
     
@@ -220,6 +231,16 @@ onMounted(async () => {
 });
 
 // 书签 API 是实时的，不需要 watch 自动保存
+
+// 监听侧边栏折叠状态和选中分组变化，自动保存
+watch([showOpenTabs, showGroups, selectedGroupId], async () => {
+  if (isLoading.value) return;
+  await saveSidebarState({
+    leftCollapsed: !showOpenTabs.value,
+    rightCollapsed: !showGroups.value,
+    selectedGroupId: selectedGroupId.value
+  });
+}, { deep: true });
 
 // 创建新分组
 async function createGroup() {
