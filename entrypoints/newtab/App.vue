@@ -1447,11 +1447,18 @@ function getFaviconUrl(url: string, favicon: string): string {
 .collection-card.expanded {
   column-span: all;
   background: rgba(30, 30, 46, 0.85);
+  /* 使用 padding 包裹的方式确保与相邻卡片有足够间距 */
+  padding-top: 1.2rem;
+  padding-bottom: 1.2rem;
+  margin-top: 0.5rem;
+  margin-bottom: 1.5rem;
+  /* 添加顶部边框增强视觉分隔 */
+  border-top: 1px solid rgba(137, 180, 250, 0.2);
 }
 
 .collection-card.expanded .tabs-list {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 0.5rem;
 }
 
@@ -1505,10 +1512,10 @@ function getFaviconUrl(url: string, favicon: string): string {
   box-shadow: 0 0 0 2px rgba(137, 180, 250, 0.2);
 }
 
-/* 标签列表 */
+/* 标签列表 - 默认2列 */
 .tabs-list {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
   gap: 0.4rem;
 }
 
