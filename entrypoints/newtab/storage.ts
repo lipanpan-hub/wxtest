@@ -241,6 +241,14 @@ export async function updateCollection(collectionId: string, name: string): Prom
 
 // 删除分组 (递归删除文件夹)
 export async function deleteGroup(groupId: string): Promise<void> {
+  // 检查分组内是否还有集合
+  const children = await browser.bookmarks.getChildren(groupId);
+  const hasCollections = children.some(child => !child.url); // 有文件夹（集合）
+  
+  if (hasCollections) {
+    throw new Error('无法删除分组：请先删除该分组内的所有集合');
+  }
+  
   await browser.bookmarks.removeTree(groupId);
 }
 
