@@ -1,6 +1,7 @@
 <script lang="ts" setup>
 import { ref, onMounted, watch, nextTick, computed } from 'vue';
 import type { Collection, TabItem, Group } from './types';
+import type { Bookmarks } from 'webextension-polyfill';
 import { 
   loadCollections, 
   loadGroups, 
@@ -612,7 +613,7 @@ async function reorderGroups(draggedGroupData: Group, targetGroup: Group) {
   const parentId = draggedGroupData.parentId;
   
   // 获取书签系统中的实际子项（确保顺序准确）
-  let bookmarkChildren: browser.bookmarks.BookmarkTreeNode[] = [];
+  let bookmarkChildren: Bookmarks.BookmarkTreeNode[] = [];
   try {
     const rootId = parentId || await getOrCreateRootFolder();
     bookmarkChildren = await browser.bookmarks.getChildren(rootId);

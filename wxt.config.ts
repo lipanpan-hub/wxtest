@@ -8,4 +8,10 @@ export default defineConfig({
     description: '标签页管理工具 - 类似 Toby',
     permissions: ['tabs', 'storage', 'bookmarks', 'contextMenus'],
   },
+  dev: {
+    server: {
+      host: '127.0.0.1',
+      port: 3000,
+    },
+  },
 });
