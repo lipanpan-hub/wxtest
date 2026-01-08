@@ -1430,8 +1430,8 @@ function getFaviconUrl(url: string, favicon: string): string {
                     />
                   </template>
                   <template v-else>
-                    <span class="group-name">{{ subGroup.name }}</span>
-                    <span class="group-count">{{ collections.filter(c => c.groupId === subGroup.id).length }}</span>
+                    <span class="group-name" @click="selectedGroupId = subGroup.id">{{ subGroup.name }}</span>
+                    <span class="group-count" @click="selectedGroupId = subGroup.id">{{ collections.filter(c => c.groupId === subGroup.id).length }}</span>
                   </template>
                   <button class="btn-move-out" @click.stop="moveGroupToRoot(subGroup.id)" title="移出文件夹">↗</button>
                   <button class="btn-delete-group" @click.stop="deleteGroup(subGroup.id)">×</button>
@@ -1484,8 +1484,8 @@ function getFaviconUrl(url: string, favicon: string): string {
                 />
               </template>
               <template v-else>
-                <span class="group-name">{{ group.name }}</span>
-                <span class="group-count">{{ collections.filter(c => c.groupId === group.id).length }}</span>
+                <span class="group-name" @click="selectedGroupId = group.id">{{ group.name }}</span>
+                <span class="group-count" @click="selectedGroupId = group.id">{{ collections.filter(c => c.groupId === group.id).length }}</span>
               </template>
               <button class="btn-delete-group" @click.stop="deleteGroup(group.id)">×</button>
             </div>
@@ -2085,6 +2085,12 @@ function getFaviconUrl(url: string, favicon: string): string {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  cursor: pointer;
+  transition: color 0.2s ease;
+}
+
+.group-name:hover {
+  color: #89b4fa;
 }
 
 .group-count {
@@ -2093,6 +2099,13 @@ function getFaviconUrl(url: string, favicon: string): string {
   background: rgba(147, 153, 178, 0.15);
   padding: 0.15rem 0.4rem;
   border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.group-count:hover {
+  background: rgba(137, 180, 250, 0.25);
+  color: #89b4fa;
 }
 
 .btn-delete-group {
