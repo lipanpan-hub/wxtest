@@ -120,7 +120,10 @@ export async function loadGroups(): Promise<Group[]> {
 
   try {
     const rootId = await getOrCreateRootFolder();
-    return await loadGroupsRecursive(rootId, null);
+    console.log('Loading groups from root:', rootId);
+    const groups = await loadGroupsRecursive(rootId, null);
+    console.log('Loaded groups count:', groups.length);
+    return groups;
   } catch (e) {
     console.error('Failed to load groups:', e);
     return [];
@@ -130,9 +133,11 @@ export async function loadGroups(): Promise<Group[]> {
 // 递归加载分组
 async function loadGroupsRecursive(parentId: string, parentGroupId: string | null): Promise<Group[]> {
   const children = await browser.bookmarks.getChildren(parentId);
+  console.log(`Loading children of ${parentId}:`, children.length, 'items');
   const groups: Group[] = [];
   
   for (const child of children) {
+    console.log('Processing child:', { id: child.id, title: child.title, hasUrl: !!child.url });
     if (!child.url) { // 只处理文件夹
       const isFolderType = isGroupFolder(child.title);
       const group: Group = {
@@ -143,6 +148,13 @@ async function loadGroupsRecursive(parentId: string, parentGroupId: string | nul
         parentId: parentGroupId
       };
       groups.push(group);
+      
+      console.log('Loaded group:', {
+        id: group.id,
+        name: group.name,
+        isFolder: group.isFolder,
+        parentId: group.parentId
+      });
       
       // 如果是分组文件夹，递归加载子分组
       if (isFolderType) {
@@ -223,10 +235,14 @@ export async function createGroup(name: string, isFolder: boolean = false, paren
   const targetParentId = parentId || await getOrCreateRootFolder();
   const storageName = getStorageName(name, isFolder);
   
+  console.log('Creating group:', { name, isFolder, parentId, targetParentId, storageName });
+  
   const folder = await browser.bookmarks.create({
     parentId: targetParentId,
     title: storageName
   });
+  
+  console.log('Created bookmark:', folder);
 
   return {
     id: folder.id,
@@ -288,17 +304,7 @@ export async function updateCollection(collectionId: string, name: string): Prom
 
 // 删除分组 (递归删除文件夹)
 export async function deleteGroup(groupId: string): Promise<void> {
-  const children = await browser.bookmarks.getChildren(groupId);
-  
-  // 检查是否有子内容
-  if (children.length > 0) {
-    // 检查是否有子文件夹（集合或子分组）
-    const hasSubFolders = children.some(child => !child.url);
-    if (hasSubFolders) {
-      throw new Error('无法删除：请先删除该分组内的所有内容');
-    }
-  }
-  
+  // 直接删除，检查逻辑已在 App.vue 中完成
   await browser.bookmarks.removeTree(groupId);
 }
 
@@ -324,9 +330,88 @@ export async function moveCollection(collectionId: string, targetGroupId: string
 }
 
 // 移动分组到指定位置（用于排序）
-export async function moveGroupToIndex(groupId: string, index: number): Promise<void> {
-  const rootId = await getOrCreateRootFolder();
-  await browser.bookmarks.move(groupId, { parentId: rootId, index });
+export async function moveGroupToIndex(groupId: string, index: number, parentId?: string | null): Promise<void> {
+  const targetParentId = parentId !== undefined && parentId !== null 
+    ? parentId 
+    : await getOrCreateRootFolder();
+  
+  console.log('moveGroupToIndex called:', {
+    groupId,
+    index,
+    parentId,
+    targetParentId
+  });
+  
+  try {
+    // 获取当前书签信息
+    const bookmarks = await browser.bookmarks.get(groupId);
+    const currentBookmark = bookmarks[0];
+    
+    console.log('Current bookmark info:', {
+      id: currentBookmark.id,
+      title: currentBookmark.title,
+      currentParentId: currentBookmark.parentId,
+      currentIndex: currentBookmark.index
+    });
+    
+    // 如果父级相同且需要移动
+    if (currentBookmark.parentId === targetParentId) {
+      const currentIndex = currentBookmark.index || 0;
+      
+      if (currentIndex === index) {
+        console.log('Already at target position, no move needed');
+        return;
+      }
+      
+      // 策略：先移动到一个临时位置（最后），然后再移动到目标位置
+      // 这样可以避免索引计算的复杂性
+      
+      // 获取父级的所有子项
+      const children = await browser.bookmarks.getChildren(targetParentId);
+      const lastIndex = children.length - 1;
+      
+      console.log('Moving in same parent:', {
+        currentIndex,
+        targetIndex: index,
+        totalChildren: children.length,
+        strategy: currentIndex < index ? 'forward' : 'backward'
+      });
+      
+      if (currentIndex < index) {
+        // 向后移动（从上往下）
+        // Chrome bookmarks API 的行为：
+        // - move 操作会先从当前位置移除项目
+        // - 然后插入到指定的 index
+        // - 如果 index 超过移除后的数组长度，会自动插入到最后
+        // 
+        // 例如：[A(0), B(1), C(2), D(3)] -> 把 A 移到索引 3
+        // - 移除 A：[B(0), C(1), D(2)]
+        // - 插入到索引 3：[B(0), C(1), D(2), A(3)]
+        // - 即使移除后只有 3 个元素（索引 0-2），插入索引 3 也是有效的
+        
+        console.log('Forward move:', {
+          requestedIndex: index,
+          totalChildren: children.length,
+          currentIndex
+        });
+        
+        const result = await browser.bookmarks.move(groupId, { index: index });
+        console.log('Forward move result:', result);
+      } else {
+        // 向前移动（从下往上）
+        // 直接使用目标索引
+        const result = await browser.bookmarks.move(groupId, { index: index });
+        console.log('Backward move result:', result);
+      }
+    } else {
+      // 不同父级，直接移动
+      const result = await browser.bookmarks.move(groupId, { parentId: targetParentId, index });
+      console.log('Cross-parent move result:', result);
+    }
+  } catch (e) {
+    console.error('browser.bookmarks.move failed:', e);
+    throw e;
+  }
 }
 
 // 生成ID (兼容旧代码，但实际上书签API会自动生成ID)
@@ -486,4 +571,32 @@ export async function removeCollectionUIState(collectionId: string): Promise<voi
   const states = await loadCollectionUIStates();
   delete states[collectionId];
   await saveCollectionUIStates(states);
+}
+
+// ============ 分组文件夹展开状态存储 ============
+
+const FOLDER_EXPANDED_STATES_KEY = 'tabmanager_folder_expanded_states';
+
+// 加载分组文件夹展开状态
+export async function loadFolderExpandedStates(): Promise<string[]> {
+  if (!isStorageAvailable()) return [];
+  
+  try {
+    const result = await browser.storage.local.get(FOLDER_EXPANDED_STATES_KEY);
+    return result[FOLDER_EXPANDED_STATES_KEY] || [];
+  } catch (e) {
+    console.error('Failed to load folder expanded states:', e);
+    return [];
+  }
+}
+
+// 保存分组文件夹展开状态
+export async function saveFolderExpandedStates(folderIds: string[]): Promise<void> {
+  if (!isStorageAvailable()) return;
+  
+  try {
+    await browser.storage.local.set({ [FOLDER_EXPANDED_STATES_KEY]: folderIds });
+  } catch (e) {
+    console.error('Failed to save folder expanded states:', e);
+  }
 }

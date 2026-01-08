@@ -24,6 +24,8 @@ import {
   saveCollectionUIStates,
   updateCollectionUIState,
   removeCollectionUIState,
+  loadFolderExpandedStates,
+  saveFolderExpandedStates,
   type CollectionUIStates
 } from './storage';
 
@@ -160,6 +162,8 @@ function toggleFolderExpand(folderId: string) {
   } else {
     expandedFolders.value.add(folderId);
   }
+  // 保存展开状态
+  saveFolderExpandedStates(Array.from(expandedFolders.value));
 }
 
 // 打开新建子分组弹窗
@@ -235,9 +239,14 @@ onMounted(async () => {
     const loadedCollections = await loadCollections();
     const uiStates = await loadCollectionUIStates();
     
-    console.log('Loaded groups:', loadedGroups);
+    // 加载分组文件夹展开状态
+    const expandedFolderIds = await loadFolderExpandedStates();
+    expandedFolders.value = new Set(expandedFolderIds);
+    
+    console.log('Loaded groups:', JSON.parse(JSON.stringify(loadedGroups)));
     console.log('Loaded collections:', loadedCollections);
     console.log('Loaded UI states:', uiStates);
+    console.log('Loaded expanded folders:', expandedFolderIds);
     
     // 确保是数组
     groups.value = Array.isArray(loadedGroups) ? loadedGroups : [];
@@ -299,11 +308,20 @@ async function createGroup() {
       newGroupIsFolder.value,
       newGroupParentId.value
     );
+    
+    console.log('Created group:', JSON.parse(JSON.stringify(newGroup)));
+    
     groups.value.push(newGroup);
+    
+    // 验证：重新加载数据
+    const reloadedGroups = await loadGroups();
+    console.log('Reloaded groups after creation:', JSON.parse(JSON.stringify(reloadedGroups)));
     
     // 如果是在分组文件夹下创建，自动展开该文件夹
     if (newGroupParentId.value) {
       expandedFolders.value.add(newGroupParentId.value);
+      // 保存展开状态
+      saveFolderExpandedStates(Array.from(expandedFolders.value));
     }
     
     // 如果创建的是普通分组，选中它
@@ -324,22 +342,22 @@ async function createGroup() {
 // 删除分组
 async function deleteGroup(id: string) {
   const group = groups.value.find(g => g.id === id);
+  
+  // 如果是分组文件夹，检查是否有子分组
+  if (group?.isFolder) {
+    const childGroups = getChildGroups(id);
+    if (childGroups.length > 0) {
+      alert('无法删除：请先删除或移出该文件夹内的所有子分组');
+      return;
+    }
+  }
+  
   const message = group?.isFolder 
-    ? '确定删除这个分组文件夹吗？文件夹内的子分组也会被删除。'
+    ? '确定删除这个分组文件夹吗？'
     : '确定删除这个分组吗？分组内的集合也会被删除。';
     
   if (confirm(message)) {
     try {
-      // 如果是分组文件夹，先递归删除子分组
-      if (group?.isFolder) {
-        const childGroups = getChildGroups(id);
-        for (const child of childGroups) {
-          await deleteGroupInBookmarks(child.id);
-          collections.value = collections.value.filter(c => c.groupId !== child.id);
-          groups.value = groups.value.filter(g => g.id !== child.id);
-        }
-      }
-      
       await deleteGroupInBookmarks(id);
       collections.value = collections.value.filter(c => c.groupId !== id);
       groups.value = groups.value.filter(g => g.id !== id);
@@ -377,6 +395,7 @@ async function saveGroupName(group: Group) {
 
 // 分组拖拽开始
 function onGroupDragStart(groupId: string, event: DragEvent) {
+  console.log('Drag start:', groupId);
   draggedGroup.value = groupId;
   if (event.dataTransfer) {
     event.dataTransfer.effectAllowed = 'move';
@@ -386,6 +405,7 @@ function onGroupDragStart(groupId: string, event: DragEvent) {
 
 // 分组拖拽经过
 function onGroupDragOver(groupId: string, event: DragEvent) {
+  console.log('Drag over:', groupId);
   if (!draggedGroup.value || draggedGroup.value === groupId) return;
   
   const draggedGroupData = groups.value.find(g => g.id === draggedGroup.value);
@@ -396,23 +416,66 @@ function onGroupDragOver(groupId: string, event: DragEvent) {
   // 不允许将分组拖入自己的子分组
   if (targetGroup.parentId === draggedGroup.value) return;
   
-  // 分组文件夹只能在顶级排序，不能拖入其他文件夹
-  if (draggedGroupData.isFolder && targetGroup.parentId !== null) return;
+  // 不允许将分组文件夹拖入其他分组文件夹内部
+  if (draggedGroupData.isFolder && targetGroup.isFolder && targetGroup.parentId === null) {
+    // 分组文件夹之间只能排序，不能嵌套
+    dragOverGroupId.value = groupId;
+    dragOverGroupAction.value = 'sort';
+    return;
+  }
   
-  event.preventDefault();
+  // 不允许将分组文件夹拖入普通分组内部（普通分组不是容器）
+  if (draggedGroupData.isFolder && !targetGroup.isFolder) {
+    // 只能在根目录排序
+    if (targetGroup.parentId === null) {
+      dragOverGroupId.value = groupId;
+      dragOverGroupAction.value = 'sort';
+    }
+    return;
+  }
+  
   dragOverGroupId.value = groupId;
   
   // 判断操作类型
-  if (targetGroup.isFolder && !draggedGroupData.isFolder && draggedGroupData.parentId !== groupId) {
-    dragOverGroupAction.value = 'move-into';
+  // 关键修改：只有当目标是文件夹，且拖动的不是文件夹，且当前不在该文件夹内时，才判断为可能的移入操作
+  // 但是，如果拖动的分组和目标文件夹在同一层级（都在根目录），默认为排序操作
+  if (targetGroup.isFolder && !draggedGroupData.isFolder) {
+    // 如果拖动的分组和目标文件夹都在根目录，默认为排序
+    // 只有明确拖到文件夹图标中心区域时才视为移入（这个需要通过 CSS 或事件目标判断）
+    // 为了简化，我们这里先判断：如果已经在该文件夹内，则不是移入操作
+    if (draggedGroupData.parentId === groupId) {
+      // 已经在该文件夹内，只能排序
+      dragOverGroupAction.value = 'sort';
+    } else if (draggedGroupData.parentId === targetGroup.parentId) {
+      // 同级（都在根目录或都在同一文件夹），默认为排序
+      dragOverGroupAction.value = 'sort';
+    } else {
+      // 不同层级，可能是移入操作
+      dragOverGroupAction.value = 'move-into';
+    }
+  } else if (draggedGroupData.parentId === targetGroup.parentId) {
+    // 同级排序（包括根目录下的普通分组之间）
+    dragOverGroupAction.value = 'sort';
   } else {
+    // 其他情况也视为排序
     dragOverGroupAction.value = 'sort';
   }
+  
+  console.log('Drag over action determined:', {
+    draggedName: draggedGroupData.name,
+    draggedIsFolder: draggedGroupData.isFolder,
+    draggedParentId: draggedGroupData.parentId,
+    targetName: targetGroup.name,
+    targetIsFolder: targetGroup.isFolder,
+    targetParentId: targetGroup.parentId,
+    sameLevel: draggedGroupData.parentId === targetGroup.parentId,
+    action: dragOverGroupAction.value
+  });
 }
 
 // 分组放置（排序或移入文件夹）
 async function onGroupDrop(targetGroupId: string, event: DragEvent) {
-  event.preventDefault();
+  console.log('Drop triggered');
   
   if (!draggedGroup.value || draggedGroup.value === targetGroupId) {
     resetGroupDragState();
@@ -423,26 +486,119 @@ async function onGroupDrop(targetGroupId: string, event: DragEvent) {
   const targetGroup = groups.value.find(g => g.id === targetGroupId);
   
   if (!draggedGroupData || !targetGroup) {
+    console.log('Group not found:', { draggedGroupData, targetGroup });
     resetGroupDragState();
     return;
   }
   
+  console.log('Drop event:', {
+    draggedId: draggedGroupData.id,
+    draggedName: draggedGroupData.name,
+    draggedParentId: draggedGroupData.parentId,
+    draggedIsFolder: draggedGroupData.isFolder,
+    targetId: targetGroup.id,
+    targetName: targetGroup.name,
+    targetParentId: targetGroup.parentId,
+    targetIsFolder: targetGroup.isFolder,
+    sameParent: draggedGroupData.parentId === targetGroup.parentId,
+    action: dragOverGroupAction.value
+  });
+  
   try {
     // 情况1: 普通分组拖入分组文件夹
-    if (targetGroup.isFolder && !draggedGroupData.isFolder && draggedGroupData.parentId !== targetGroupId) {
+    if (targetGroup.isFolder && !draggedGroupData.isFolder && dragOverGroupAction.value === 'move-into') {
+      console.log('Action: Move into folder');
       await moveGroupInBookmarks(draggedGroup.value, targetGroupId);
       draggedGroupData.parentId = targetGroupId;
       expandedFolders.value.add(targetGroupId);
+      // 保存展开状态
+      saveFolderExpandedStates(Array.from(expandedFolders.value));
     }
     // 情况2: 同级排序（都在顶级或都在同一文件夹内）
     else if (draggedGroupData.parentId === targetGroup.parentId) {
+      console.log('Action: Reorder (same parent)', {
+        condition: 'draggedGroupData.parentId === targetGroup.parentId',
+        draggedParentId: draggedGroupData.parentId,
+        targetParentId: targetGroup.parentId,
+        equal: draggedGroupData.parentId === targetGroup.parentId
+      });
       await reorderGroups(draggedGroupData, targetGroup);
     }
-    // 情况3: 从文件夹内拖到顶级分组位置（移出并排序）
-    else if (draggedGroupData.parentId !== null && targetGroup.parentId === null && !targetGroup.isFolder) {
+    // 情况3: 从一个文件夹拖到另一个文件夹的子分组位置（跨文件夹移动并排序）
+    else if (draggedGroupData.parentId !== null && targetGroup.parentId !== null && 
+             draggedGroupData.parentId !== targetGroup.parentId && !draggedGroupData.isFolder) {
+      console.log('Action: Move between folders and reorder');
+      // 先移动到目标文件夹
+      await moveGroupInBookmarks(draggedGroup.value, targetGroup.parentId);
+      draggedGroupData.parentId = targetGroup.parentId;
+      
+      // 等待书签系统更新
+      await new Promise(resolve => setTimeout(resolve, 50));
+      
+      // 然后在目标文件夹内排序
+      await reorderGroups(draggedGroupData, targetGroup);
+      
+      // 展开目标文件夹
+      if (targetGroup.parentId) {
+        expandedFolders.value.add(targetGroup.parentId);
+        saveFolderExpandedStates(Array.from(expandedFolders.value));
+      }
+    }
+    // 情况4: 从文件夹内拖到顶级位置（移出并排序）
+    else if (draggedGroupData.parentId !== null && targetGroup.parentId === null) {
+      console.log('Action: Move out to root and reorder');
+      // 先移动到顶级（改变父级）
       await moveGroupInBookmarks(draggedGroup.value, null);
       draggedGroupData.parentId = null;
+      
+      // 等待一小段时间确保书签系统更新完成
+      await new Promise(resolve => setTimeout(resolve, 50));
+      
+      // 然后在顶级进行排序
       await reorderGroups(draggedGroupData, targetGroup);
+    }
+    // 情况5: 从顶级拖到文件夹内的子分组位置（移入并排序）
+    else if (draggedGroupData.parentId === null && targetGroup.parentId !== null && !draggedGroupData.isFolder) {
+      console.log('Action: Move from root into folder and reorder');
+      // 先移动到目标文件夹
+      await moveGroupInBookmarks(draggedGroup.value, targetGroup.parentId);
+      draggedGroupData.parentId = targetGroup.parentId;
+      
+      // 等待书签系统更新
+      await new Promise(resolve => setTimeout(resolve, 50));
+      
+      // 然后在文件夹内排序
+      await reorderGroups(draggedGroupData, targetGroup);
+      
+      // 展开目标文件夹
+      if (targetGroup.parentId) {
+        expandedFolders.value.add(targetGroup.parentId);
+        saveFolderExpandedStates(Array.from(expandedFolders.value));
+      }
+    } else {
+      console.log('Action: No action matched', {
+        condition1: {
+          check: 'move-into',
+          result: targetGroup.isFolder && !draggedGroupData.isFolder && dragOverGroupAction.value === 'move-into'
+        },
+        condition2: {
+          check: 'same parent',
+          result: draggedGroupData.parentId === targetGroup.parentId
+        },
+        condition3: {
+          check: 'between folders',
+          result: draggedGroupData.parentId !== null && targetGroup.parentId !== null && 
+                  draggedGroupData.parentId !== targetGroup.parentId
+        },
+        condition4: {
+          check: 'folder to root',
+          result: draggedGroupData.parentId !== null && targetGroup.parentId === null
+        },
+        condition5: {
+          check: 'root to folder',
+          result: draggedGroupData.parentId === null && targetGroup.parentId !== null
+        }
+      });
     }
   } catch (e) {
     console.error('Failed to move/reorder group:', e);
@@ -455,39 +611,130 @@ async function onGroupDrop(targetGroupId: string, event: DragEvent) {
 async function reorderGroups(draggedGroupData: Group, targetGroup: Group) {
   const parentId = draggedGroupData.parentId;
   
-  // 获取同级分组列表
-  const siblings = parentId === null 
-    ? groups.value.filter(g => g.parentId === null)
-    : groups.value.filter(g => g.parentId === parentId);
-  
-  const sourceIndex = siblings.findIndex(g => g.id === draggedGroupData.id);
-  const targetIndex = siblings.findIndex(g => g.id === targetGroup.id);
-  
-  if (sourceIndex === -1 || targetIndex === -1 || sourceIndex === targetIndex) return;
-  
-  // 更新本地数组顺序
-  const globalSourceIndex = groups.value.findIndex(g => g.id === draggedGroupData.id);
-  const globalTargetIndex = groups.value.findIndex(g => g.id === targetGroup.id);
-  
-  if (globalSourceIndex > -1 && globalTargetIndex > -1) {
-    const [movedGroup] = groups.value.splice(globalSourceIndex, 1);
-    groups.value.splice(globalTargetIndex, 0, movedGroup);
+  // 获取书签系统中的实际子项（确保顺序准确）
+  let bookmarkChildren: browser.bookmarks.BookmarkTreeNode[] = [];
+  try {
+    const rootId = parentId || await getOrCreateRootFolder();
+    bookmarkChildren = await browser.bookmarks.getChildren(rootId);
+  } catch (e) {
+    console.error('Failed to get bookmark children:', e);
+    return;
   }
   
-  // 同步到书签 - 计算在父级内的新位置
-  const newIndex = targetIndex > sourceIndex ? targetIndex : targetIndex;
-  await moveGroupToPosition(draggedGroupData.id, parentId, newIndex);
+  // 在书签系统中找到源和目标的索引
+  const sourceBookmarkIndex = bookmarkChildren.findIndex(b => b.id === draggedGroupData.id);
+  const targetBookmarkIndex = bookmarkChildren.findIndex(b => b.id === targetGroup.id);
+  
+  if (sourceBookmarkIndex === -1 || targetBookmarkIndex === -1) {
+    console.log('Bookmark not found in parent:', { 
+      sourceBookmarkIndex, 
+      targetBookmarkIndex,
+      draggedId: draggedGroupData.id,
+      targetId: targetGroup.id,
+      parentId 
+    });
+    return;
+  }
+  
+  if (sourceBookmarkIndex === targetBookmarkIndex) {
+    console.log('Already in correct position');
+    return;
+  }
+  
+  // 计算正确的目标索引
+  // 
+  // browser.bookmarks.move API 的行为：
+  // move(id, {parentId, index}) 会将书签移动到指定父级的指定索引位置
+  // 
+  // 关键理解：
+  // 1. API 先从原位置移除项目
+  // 2. 然后插入到新位置的 index
+  // 3. 如果 index 超过移除后的数组长度，会自动插入到最后
+  // 
+  // 拖放的语义：把 A 拖到 B 上 = A 取代 B 的位置
+  // 
+  // 无论从上往下还是从下往上，都直接使用目标的当前索引
+  // Chrome bookmarks API 会自动处理移除后的索引调整
+  
+  const finalTargetIndex = targetBookmarkIndex;
+  
+  console.log('Reordering:', {
+    draggedId: draggedGroupData.id,
+    draggedName: draggedGroupData.name,
+    targetId: targetGroup.id,
+    targetName: targetGroup.name,
+    sourceBookmarkIndex,
+    targetBookmarkIndex,
+    finalTargetIndex,
+    calculation: sourceBookmarkIndex < targetBookmarkIndex ? 'targetIndex' : 'targetIndex + 1',
+    distance: Math.abs(sourceBookmarkIndex - targetBookmarkIndex),
+    parentId,
+    direction: sourceBookmarkIndex < targetBookmarkIndex ? 'down (上→下)' : 'up (下→上)'
+  });
+  
+  // 同步到书签系统
+  try {
+    console.log('Calling moveGroupToPosition with:', {
+      groupId: draggedGroupData.id,
+      parentId,
+      index: finalTargetIndex
+    });
+    
+    await moveGroupToPosition(draggedGroupData.id, parentId, finalTargetIndex);
+    console.log('Successfully moved group in bookmarks to index:', finalTargetIndex);
+    
+    // 验证：重新读取书签顺序
+    const rootId = parentId || await getOrCreateRootFolder();
+    const updatedChildren = await browser.bookmarks.getChildren(rootId);
+    console.log('Updated bookmark order:', updatedChildren.map((b, i) => `${i}: ${b.title} (${b.id})`));
+    
+    // 更新本地数组顺序
+    const globalSourceIndex = groups.value.findIndex(g => g.id === draggedGroupData.id);
+    const globalTargetIndex = groups.value.findIndex(g => g.id === targetGroup.id);
+    
+    if (globalSourceIndex > -1 && globalTargetIndex > -1) {
+      const [movedGroup] = groups.value.splice(globalSourceIndex, 1);
+      groups.value.splice(globalTargetIndex, 0, movedGroup);
+      console.log('Updated local groups array');
+    }
+  } catch (e) {
+    console.error('Failed to reorder groups:', e);
+  }
+}
+
+// 获取或创建根文件夹（从 storage.ts 导入的辅助函数）
+async function getOrCreateRootFolder(): Promise<string> {
+  const ROOT_FOLDER_NAME = 'TabManager';
+  const results = await browser.bookmarks.search({ title: ROOT_FOLDER_NAME });
+  const existing = results.find(b => !b.url);
+  if (existing) return existing.id;
+  
+  // 动态获取合适的父文件夹ID
+  const tree = await browser.bookmarks.getTree();
+  const root = tree[0];
+  let parentId = '2'; // 默认值
+  
+  if (root && root.children && root.children.length > 0) {
+    for (const child of root.children) {
+      if (child.id === 'unfiled_____' || child.id === 'menu________' || child.id === '2') {
+        parentId = child.id;
+        break;
+      }
+    }
+  }
+  
+  const folder = await browser.bookmarks.create({
+    parentId: parentId,
+    title: ROOT_FOLDER_NAME
+  });
+  
+  return folder.id;
 }
 
 // 移动分组到指定位置
 async function moveGroupToPosition(groupId: string, parentId: string | null, index: number) {
   try {
-    if (parentId === null) {
-      await moveGroupToIndex(groupId, index);
-    } else {
-      // 在文件夹内移动
-      await browser.bookmarks.move(groupId, { parentId, index });
-    }
+    await moveGroupToIndex(groupId, index, parentId);
   } catch (e) {
     console.error('Failed to move group to position:', e);
   }
@@ -996,7 +1243,7 @@ function getFaviconUrl(url: string, favicon: string): string {
               />
             </template>
             <template v-else>
-              <h3 @dblclick="startEditCollection(collection)">{{ collection.name }}</h3>
+              <h3>{{ collection.name }}</h3>
             </template>
             <div class="collection-actions">
               <button class="btn-icon" :title="collection.expanded ? '缩小' : '放大'" @click="toggleCollectionExpand(collection)">
@@ -1104,14 +1351,22 @@ function getFaviconUrl(url: string, favicon: string): string {
                 'drag-over-sort': dragOverGroupId === group.id && dragOverGroupAction === 'sort',
                 'dragging-group': draggedGroup === group.id
               }"
-              draggable="true"
-              @dragstart="onGroupDragStart(group.id, $event)"
-              @dragover="onGroupDragOver(group.id, $event)"
-              @dragleave="dragOverGroupId = null; dragOverGroupAction = null"
-              @drop="onGroupDrop(group.id, $event)"
-              @dragend="onGroupDragEnd"
             >
-              <div class="folder-header" @click="toggleFolderExpand(group.id)">
+              <div 
+                class="folder-header" 
+                @click="toggleFolderExpand(group.id)"
+                @dragover.prevent="onGroupDragOver(group.id, $event)"
+                @dragleave="dragOverGroupId = null; dragOverGroupAction = null"
+                @drop.prevent="onGroupDrop(group.id, $event)"
+              >
+                <span 
+                  class="drag-handle"
+                  draggable="true"
+                  @dragstart="onGroupDragStart(group.id, $event)"
+                  @dragend="onGroupDragEnd"
+                  @click.stop
+                  title="拖动排序"
+                >⋮⋮</span>
                 <span class="folder-icon">{{ expandedFolders.has(group.id) ? '📂' : '📁' }}</span>
                 <template v-if="editingGroupId === group.id">
                   <input
@@ -1125,7 +1380,7 @@ function getFaviconUrl(url: string, favicon: string): string {
                   />
                 </template>
                 <template v-else>
-                  <span class="group-name" @dblclick.stop="startEditGroup(group)">{{ group.name }}</span>
+                  <span class="group-name">{{ group.name }}</span>
                 </template>
                 <button class="btn-add-subgroup" @click.stop="openAddSubGroup(group.id)" title="添加子分组">+</button>
                 <button class="btn-delete-group" @click.stop="deleteGroup(group.id)">×</button>
@@ -1142,14 +1397,26 @@ function getFaviconUrl(url: string, favicon: string): string {
                     'drag-over-sort': dragOverGroupId === subGroup.id && dragOverGroupAction === 'sort',
                     'dragging-group': draggedGroup === subGroup.id
                   }"
-                  draggable="true"
-                  @click="selectedGroupId = subGroup.id"
-                  @dragstart="onGroupDragStart(subGroup.id, $event)"
-                  @dragover="onGroupDragOver(subGroup.id, $event)"
+                  @dragover.prevent="onGroupDragOver(subGroup.id, $event)"
                   @dragleave="dragOverGroupId = null; dragOverGroupAction = null"
-                  @drop="onGroupDrop(subGroup.id, $event)"
-                  @dragend="onGroupDragEnd"
+                  @drop.prevent="onGroupDrop(subGroup.id, $event)"
                 >
+                  <button 
+                    class="btn-select-group"
+                    :class="{ active: selectedGroupId === subGroup.id }"
+                    @click="selectedGroupId = subGroup.id"
+                    :title="selectedGroupId === subGroup.id ? '已选中' : '点击选中'"
+                  >
+                    {{ selectedGroupId === subGroup.id ? '●' : '○' }}
+                  </button>
+                  <span 
+                    class="drag-handle"
+                    draggable="true"
+                    @dragstart="onGroupDragStart(subGroup.id, $event)"
+                    @dragend="onGroupDragEnd"
+                    @click.stop
+                    title="拖动排序"
+                  >⋮⋮</span>
                   <template v-if="editingGroupId === subGroup.id">
                     <input
                       v-model="editingName"
@@ -1162,7 +1429,7 @@ function getFaviconUrl(url: string, favicon: string): string {
                     />
                   </template>
                   <template v-else>
-                    <span class="group-name" @dblclick.stop="startEditGroup(subGroup)">{{ subGroup.name }}</span>
+                    <span class="group-name">{{ subGroup.name }}</span>
                     <span class="group-count">{{ collections.filter(c => c.groupId === subGroup.id).length }}</span>
                   </template>
                   <button class="btn-move-out" @click.stop="moveGroupToRoot(subGroup.id)" title="移出文件夹">↗</button>
@@ -1184,14 +1451,26 @@ function getFaviconUrl(url: string, favicon: string): string {
                 'drag-over-sort': dragOverGroupId === group.id && dragOverGroupAction === 'sort',
                 'dragging-group': draggedGroup === group.id
               }"
-              draggable="true"
-              @click="selectedGroupId = group.id"
-              @dragstart="onGroupDragStart(group.id, $event)"
-              @dragover="onGroupDragOver(group.id, $event)"
+              @dragover.prevent="onGroupDragOver(group.id, $event)"
               @dragleave="dragOverGroupId = null; dragOverGroupAction = null"
-              @drop="onGroupDrop(group.id, $event)"
-              @dragend="onGroupDragEnd"
+              @drop.prevent="onGroupDrop(group.id, $event)"
             >
+              <button 
+                class="btn-select-group"
+                :class="{ active: selectedGroupId === group.id }"
+                @click="selectedGroupId = group.id"
+                :title="selectedGroupId === group.id ? '已选中' : '点击选中'"
+              >
+                {{ selectedGroupId === group.id ? '●' : '○' }}
+              </button>
+              <span 
+                class="drag-handle"
+                draggable="true"
+                @dragstart="onGroupDragStart(group.id, $event)"
+                @dragend="onGroupDragEnd"
+                @click.stop
+                title="拖动排序"
+              >⋮⋮</span>
               <template v-if="editingGroupId === group.id">
                 <input
                   v-model="editingName"
@@ -1204,7 +1483,7 @@ function getFaviconUrl(url: string, favicon: string): string {
                 />
               </template>
               <template v-else>
-                <span class="group-name" @dblclick.stop="startEditGroup(group)">{{ group.name }}</span>
+                <span class="group-name">{{ group.name }}</span>
                 <span class="group-count">{{ collections.filter(c => c.groupId === group.id).length }}</span>
               </template>
               <button class="btn-delete-group" @click.stop="deleteGroup(group.id)">×</button>
@@ -1451,6 +1730,67 @@ function getFaviconUrl(url: string, favicon: string): string {
   opacity: 0.5;
 }
 
+/* 拖动手柄样式 */
+.drag-handle {
+  color: #6c7086;
+  font-size: 0.9rem;
+  cursor: grab;
+  padding: 0.2rem 0.3rem;
+  border-radius: 4px;
+  transition: all 0.2s;
+  user-select: none;
+  line-height: 1;
+  opacity: 0;
+  flex-shrink: 0;
+}
+
+.drag-handle:hover {
+  color: #89b4fa;
+  background: rgba(137, 180, 250, 0.15);
+}
+
+.drag-handle:active {
+  cursor: grabbing;
+  background: rgba(137, 180, 250, 0.25);
+}
+
+.group-item:hover .drag-handle,
+.folder-header:hover .drag-handle,
+.sub-group:hover .drag-handle {
+  opacity: 1;
+}
+
+/* 选中按钮样式 */
+.btn-select-group {
+  background: transparent;
+  border: none;
+  color: #6c7086;
+  cursor: pointer;
+  font-size: 0.9rem;
+  padding: 0.2rem 0.3rem;
+  border-radius: 4px;
+  transition: all 0.2s;
+  flex-shrink: 0;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.btn-select-group:hover {
+  color: #89b4fa;
+  background: rgba(137, 180, 250, 0.15);
+}
+
+.btn-select-group.active {
+  color: #89b4fa;
+  font-weight: bold;
+}
+
+.btn-select-group.active:hover {
+  color: #b4befe;
+}
+
 .folder-header {
   display: flex;
   align-items: center;
@@ -1586,14 +1926,18 @@ function getFaviconUrl(url: string, favicon: string): string {
 
 .btn-move-out {
   background: rgba(137, 180, 250, 0.1);
-  border: none;
+  border: 1px solid transparent;
   color: #89b4fa;
   cursor: pointer;
   font-size: 0.8rem;
-  padding: 0.15rem 0.35rem;
-  border-radius: 4px;
+  padding: 0.2rem 0.4rem;
+  border-radius: 5px;
   opacity: 0;
-  transition: all 0.2s;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
 }
 
 .group-item:hover .btn-move-out,
@@ -1603,7 +1947,14 @@ function getFaviconUrl(url: string, favicon: string): string {
 
 .btn-move-out:hover {
   background: rgba(137, 180, 250, 0.2);
+  border-color: rgba(137, 180, 250, 0.3);
   color: #b4befe;
+  transform: translateX(2px) translateY(-2px);
+  box-shadow: 0 2px 8px rgba(137, 180, 250, 0.3);
+}
+
+.btn-move-out:active {
+  transform: translateX(1px) translateY(-1px);
 }
 
 .folder-icon-collapsed {
@@ -1694,13 +2045,9 @@ function getFaviconUrl(url: string, favicon: string): string {
   padding: 0.7rem 0.6rem;
   border-radius: 8px;
   background: rgba(147, 153, 178, 0.08);
-  cursor: grab;
+  cursor: pointer;
   transition: all 0.2s;
   border: 1px solid transparent;
-}
-
-.group-item:active {
-  cursor: grabbing;
 }
 
 .group-item:hover {
@@ -1748,22 +2095,36 @@ function getFaviconUrl(url: string, favicon: string): string {
 }
 
 .btn-delete-group {
-  background: transparent;
-  border: none;
+  background: rgba(243, 139, 168, 0.1);
+  border: 1px solid transparent;
   color: #6c7086;
   cursor: pointer;
-  font-size: 1rem;
-  padding: 0 0.2rem;
+  font-size: 0.85rem;
+  padding: 0.25rem 0.4rem;
+  border-radius: 6px;
   opacity: 0;
-  transition: all 0.2s;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
 }
 
-.group-item:hover .btn-delete-group {
+.group-item:hover .btn-delete-group,
+.folder-header:hover .btn-delete-group {
   opacity: 1;
 }
 
 .btn-delete-group:hover {
+  background: rgba(243, 139, 168, 0.2);
+  border-color: rgba(243, 139, 168, 0.3);
   color: #f38ba8;
+  transform: scale(1.1);
+  box-shadow: 0 2px 8px rgba(243, 139, 168, 0.25);
+}
+
+.btn-delete-group:active {
+  transform: scale(0.95);
 }
 
 /* 折叠时的分组图标列表 */
@@ -2003,17 +2364,42 @@ function getFaviconUrl(url: string, favicon: string): string {
 }
 
 .btn-icon {
-  background: transparent;
-  border: none;
+  background: rgba(147, 153, 178, 0.08);
+  border: 1px solid transparent;
   cursor: pointer;
-  font-size: 1rem;
-  padding: 0.3rem;
+  font-size: 0.9rem;
+  padding: 0.35rem 0.4rem;
+  border-radius: 6px;
   opacity: 0.7;
-  transition: opacity 0.2s;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
 }
 
 .btn-icon:hover {
   opacity: 1;
+  background: rgba(147, 153, 178, 0.15);
+  border-color: rgba(147, 153, 178, 0.25);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+}
+
+.btn-icon:active {
+  transform: translateY(0);
+}
+
+/* 删除按钮特殊样式 */
+.btn-icon[title*="删除"] {
+  background: rgba(243, 139, 168, 0.08);
+}
+
+.btn-icon[title*="删除"]:hover {
+  background: rgba(243, 139, 168, 0.2);
+  border-color: rgba(243, 139, 168, 0.35);
+  color: #f38ba8;
+  box-shadow: 0 2px 8px rgba(243, 139, 168, 0.3);
 }
 
 .edit-input {
@@ -2134,17 +2520,30 @@ function getFaviconUrl(url: string, favicon: string): string {
 }
 
 .btn-delete {
-  background: transparent;
-  border: none;
+  background: rgba(243, 139, 168, 0.08);
+  border: 1px solid transparent;
   color: #6c7086;
   cursor: pointer;
-  font-size: 1rem;
-  padding: 0 0.2rem;
-  transition: color 0.2s;
+  font-size: 0.85rem;
+  padding: 0.2rem 0.35rem;
+  border-radius: 4px;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
 }
 
 .btn-delete:hover {
+  background: rgba(243, 139, 168, 0.2);
+  border-color: rgba(243, 139, 168, 0.35);
   color: #f38ba8;
+  transform: scale(1.15);
+  box-shadow: 0 2px 6px rgba(243, 139, 168, 0.3);
+}
+
+.btn-delete:active {
+  transform: scale(0.9);
 }
 
 .empty-hint {
