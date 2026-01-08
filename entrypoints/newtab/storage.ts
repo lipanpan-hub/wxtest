@@ -380,22 +380,24 @@ export async function moveGroupToIndex(groupId: string, index: number, parentId?
       if (currentIndex < index) {
         // 向后移动（从上往下）
         // Chrome bookmarks API 的行为：
-        // - move 操作会先从当前位置移除项目
-        // - 然后插入到指定的 index
-        // - 如果 index 超过移除后的数组长度，会自动插入到最后
+        // - index 参数是基于移除源项目之前的数组计算的
+        // - 当源项目在目标位置之前时，移除源项目后，目标位置及之后的元素索引会减1
+        // - 所以要让项目出现在目标位置，需要使用 index + 1
         // 
-        // 例如：[A(0), B(1), C(2), D(3)] -> 把 A 移到索引 3
-        // - 移除 A：[B(0), C(1), D(2)]
-        // - 插入到索引 3：[B(0), C(1), D(2), A(3)]
-        // - 即使移除后只有 3 个元素（索引 0-2），插入索引 3 也是有效的
+        // 例如：[A(0), B(1), C(2)] -> 把 A 移到 C 的位置（期望 [B, C, A]）
+        // - 如果使用 index=2，结果是 [B, A, C]（错误）
+        // - 如果使用 index=3，结果是 [B, C, A]（正确）
+        
+        const adjustedIndex = index + 1;
         
         console.log('Forward move:', {
           requestedIndex: index,
+          adjustedIndex,
           totalChildren: children.length,
           currentIndex
         });
         
-        const result = await browser.bookmarks.move(groupId, { index: index });
+        const result = await browser.bookmarks.move(groupId, { index: adjustedIndex });
         console.log('Forward move result:', result);
       } else {
         // 向前移动（从下往上）

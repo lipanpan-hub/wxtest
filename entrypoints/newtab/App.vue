@@ -649,13 +649,23 @@ async function reorderGroups(draggedGroupData: Group, targetGroup: Group) {
   // 
   // 关键理解：
   // 1. API 先从原位置移除项目
-  // 2. 然后插入到新位置的 index
-  // 3. 如果 index 超过移除后的数组长度，会自动插入到最后
+  // 2. 然后插入到新位置的 index（基于移除后的数组）
+  // 3. index 表示"插入到这个位置"，原来在这个位置及之后的元素会后移
   // 
-  // 拖放的语义：把 A 拖到 B 上 = A 取代 B 的位置
+  // 拖放的语义：把 A 拖到 B 上 = A 应该出现在 B 原来的位置
   // 
-  // 无论从上往下还是从下往上，都直接使用目标的当前索引
-  // Chrome bookmarks API 会自动处理移除后的索引调整
+  // 从上往下拖动（sourceIndex < targetIndex）：
+  //   例如 [A(0), B(1), C(2)] 把 A 拖到 C 上，期望 [B, C, A]
+  //   移除 A 后：[B(0), C(1)]
+  //   要让 A 出现在 C 后面（原来 C 的位置），需要插入到索引 2
+  //   但因为移除 A 后 C 的索引变成了 1，所以需要 targetIndex（不需要调整）
+  //   结果：[B(0), C(1), A(2)] ✓
+  // 
+  // 从下往上拖动（sourceIndex > targetIndex）：
+  //   例如 [A(0), B(1), C(2)] 把 C 拖到 A 上，期望 [C, A, B]
+  //   移除 C 后：[A(0), B(1)]
+  //   要让 C 出现在 A 的位置，需要插入到索引 0
+  //   结果：[C(0), A(1), B(2)] ✓
   
   const finalTargetIndex = targetBookmarkIndex;
   
