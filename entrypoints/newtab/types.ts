@@ -18,6 +18,8 @@ export interface Group {
   id: string;
   name: string;
   createdAt: number;
+  isFolder: boolean;      // 是否是分组文件夹（包含子分组）
+  parentId: string | null; // 父分组文件夹ID，null 表示顶级
 }
 
 export interface AppState {

@@ -1,9 +1,28 @@
 import type { Collection, Group, TabItem } from './types';
 
 const ROOT_FOLDER_NAME = 'TabManager';
+const FOLDER_PREFIX = '📁'; // 分组文件夹的前缀标记
 
 // 缓存根文件夹ID
 let rootFolderId: string | null = null;
+
+// 判断是否是分组文件夹（通过名称前缀）
+export function isGroupFolder(name: string): boolean {
+  return name.startsWith(FOLDER_PREFIX);
+}
+
+// 获取显示名称（去除前缀）
+export function getDisplayName(name: string): string {
+  return isGroupFolder(name) ? name.slice(FOLDER_PREFIX.length) : name;
+}
+
+// 获取存储名称（添加前缀）
+export function getStorageName(name: string, isFolder: boolean): string {
+  if (isFolder && !name.startsWith(FOLDER_PREFIX)) {
+    return FOLDER_PREFIX + name;
+  }
+  return name;
+}
 
 // 检查 bookmarks API 是否可用
 function isBookmarksAvailable(): boolean {
@@ -92,7 +111,7 @@ async function getOrCreateRootFolder(): Promise<string> {
   return rootFolderId;
 }
 
-// 加载所有分组 (Group = TabManager 下的一级文件夹)
+// 加载所有分组 (递归加载，支持分组文件夹)
 export async function loadGroups(): Promise<Group[]> {
   if (!isBookmarksAvailable()) {
     console.error('browser.bookmarks is not available');
@@ -101,23 +120,43 @@ export async function loadGroups(): Promise<Group[]> {
 
   try {
     const rootId = await getOrCreateRootFolder();
-    const children = await browser.bookmarks.getChildren(rootId);
-    
-    return children
-      .filter(child => !child.url) // 只要文件夹
-      .map(folder => ({
-        id: folder.id,
-        name: folder.title,
-        createdAt: folder.dateAdded || Date.now()
-      }));
+    return await loadGroupsRecursive(rootId, null);
   } catch (e) {
     console.error('Failed to load groups:', e);
     return [];
   }
 }
 
+// 递归加载分组
+async function loadGroupsRecursive(parentId: string, parentGroupId: string | null): Promise<Group[]> {
+  const children = await browser.bookmarks.getChildren(parentId);
+  const groups: Group[] = [];
+  
+  for (const child of children) {
+    if (!child.url) { // 只处理文件夹
+      const isFolderType = isGroupFolder(child.title);
+      const group: Group = {
+        id: child.id,
+        name: getDisplayName(child.title),
+        createdAt: child.dateAdded || Date.now(),
+        isFolder: isFolderType,
+        parentId: parentGroupId
+      };
+      groups.push(group);
+      
+      // 如果是分组文件夹，递归加载子分组
+      if (isFolderType) {
+        const subGroups = await loadGroupsRecursive(child.id, child.id);
+        groups.push(...subGroups);
+      }
+    }
+  }
+  
+  return groups;
+}
 
-// 加载所有集合 (Collection = 二级文件夹)
+
+// 加载所有集合 (Collection = 普通分组下的文件夹)
 export async function loadCollections(): Promise<Collection[]> {
   if (!isBookmarksAvailable()) {
     console.error('browser.bookmarks is not available');
@@ -128,19 +167,22 @@ export async function loadCollections(): Promise<Collection[]> {
     const groups = await loadGroups();
     const collections: Collection[] = [];
 
+    // 只从普通分组（非分组文件夹）加载集合
     for (const group of groups) {
-      const children = await browser.bookmarks.getChildren(group.id);
-      
-      for (const child of children) {
-        if (!child.url) { // 是文件夹
-          const tabs = await loadTabsFromFolder(child.id);
-          collections.push({
-            id: child.id,
-            name: child.title,
-            tabs,
-            createdAt: child.dateAdded || Date.now(),
-            groupId: group.id
-          });
+      if (!group.isFolder) {
+        const children = await browser.bookmarks.getChildren(group.id);
+        
+        for (const child of children) {
+          if (!child.url) { // 是文件夹
+            const tabs = await loadTabsFromFolder(child.id);
+            collections.push({
+              id: child.id,
+              name: child.title,
+              tabs,
+              createdAt: child.dateAdded || Date.now(),
+              groupId: group.id
+            });
+          }
         }
       }
     }
@@ -176,18 +218,22 @@ function getFaviconUrl(url: string): string {
   }
 }
 
-// 创建分组 (在 TabManager 下创建文件夹)
-export async function createGroup(name: string): Promise<Group> {
-  const rootId = await getOrCreateRootFolder();
+// 创建分组 (在 TabManager 或分组文件夹下创建)
+export async function createGroup(name: string, isFolder: boolean = false, parentId: string | null = null): Promise<Group> {
+  const targetParentId = parentId || await getOrCreateRootFolder();
+  const storageName = getStorageName(name, isFolder);
+  
   const folder = await browser.bookmarks.create({
-    parentId: rootId,
-    title: name
+    parentId: targetParentId,
+    title: storageName
   });
 
   return {
     id: folder.id,
-    name: folder.title,
-    createdAt: folder.dateAdded || Date.now()
+    name: name,
+    createdAt: folder.dateAdded || Date.now(),
+    isFolder: isFolder,
+    parentId: parentId
   };
 }
 
@@ -230,8 +276,9 @@ export async function removeTabFromCollection(tabId: string): Promise<void> {
 }
 
 // 更新分组名称
-export async function updateGroup(groupId: string, name: string): Promise<void> {
-  await browser.bookmarks.update(groupId, { title: name });
+export async function updateGroup(groupId: string, name: string, isFolder: boolean = false): Promise<void> {
+  const storageName = getStorageName(name, isFolder);
+  await browser.bookmarks.update(groupId, { title: storageName });
 }
 
 // 更新集合名称
@@ -241,15 +288,24 @@ export async function updateCollection(collectionId: string, name: string): Prom
 
 // 删除分组 (递归删除文件夹)
 export async function deleteGroup(groupId: string): Promise<void> {
-  // 检查分组内是否还有集合
   const children = await browser.bookmarks.getChildren(groupId);
-  const hasCollections = children.some(child => !child.url); // 有文件夹（集合）
   
-  if (hasCollections) {
-    throw new Error('无法删除分组：请先删除该分组内的所有集合');
+  // 检查是否有子内容
+  if (children.length > 0) {
+    // 检查是否有子文件夹（集合或子分组）
+    const hasSubFolders = children.some(child => !child.url);
+    if (hasSubFolders) {
+      throw new Error('无法删除：请先删除该分组内的所有内容');
+    }
   }
   
   await browser.bookmarks.removeTree(groupId);
+}
+
+// 移动分组到另一个分组文件夹或根目录
+export async function moveGroup(groupId: string, targetParentId: string | null): Promise<void> {
+  const parentId = targetParentId || await getOrCreateRootFolder();
+  await browser.bookmarks.move(groupId, { parentId });
 }
 
 // 删除集合 (递归删除文件夹)

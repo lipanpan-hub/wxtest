@@ -14,6 +14,7 @@ import {
   removeTabFromCollection,
   moveTab,
   moveGroupToIndex,
+  moveGroup as moveGroupInBookmarks,
   debugStorage, 
   loadSidebarWidths, 
   saveSidebarWidths,
@@ -44,6 +45,8 @@ const showAddCollection = ref(false);
 const showAddGroup = ref(false);
 const newCollectionName = ref('');
 const newGroupName = ref('');
+const newGroupIsFolder = ref(false); // 新建分组是否为分组文件夹
+const newGroupParentId = ref<string | null>(null); // 新建分组的父级ID
 const newCollectionInput = ref<HTMLInputElement | null>(null);
 const newGroupInput = ref<HTMLInputElement | null>(null);
 
@@ -52,6 +55,9 @@ const editingCollectionId = ref<string | null>(null);
 const editingGroupId = ref<string | null>(null);
 const editingTabId = ref<string | null>(null);
 const editingName = ref('');
+
+// 分组文件夹展开状态
+const expandedFolders = ref<Set<string>>(new Set());
 
 // 当前打开的标签页
 const openTabs = ref<BrowserTab[]>([]);
@@ -129,12 +135,53 @@ const dragOverTabId = ref<string | null>(null);
 // 分组拖拽排序状态
 const draggedGroup = ref<string | null>(null);
 const dragOverGroupId = ref<string | null>(null);
+const dragOverGroupAction = ref<'sort' | 'move-into' | null>(null); // 区分排序和移入文件夹
 
 // 当前分组的集合（按顺序）
 const currentCollections = computed(() => {
   if (!selectedGroupId.value) return [];
   return collections.value.filter(c => c.groupId === selectedGroupId.value);
 });
+
+// 顶级分组（parentId 为 null）
+const topLevelGroups = computed(() => {
+  return groups.value.filter(g => g.parentId === null);
+});
+
+// 获取分组文件夹的子分组
+function getChildGroups(folderId: string): Group[] {
+  return groups.value.filter(g => g.parentId === folderId);
+}
+
+// 切换分组文件夹展开状态
+function toggleFolderExpand(folderId: string) {
+  if (expandedFolders.value.has(folderId)) {
+    expandedFolders.value.delete(folderId);
+  } else {
+    expandedFolders.value.add(folderId);
+  }
+}
+
+// 打开新建子分组弹窗
+function openAddSubGroup(parentId: string) {
+  newGroupParentId.value = parentId;
+  newGroupIsFolder.value = false;
+  showAddGroup.value = true;
+}
+
+// 打开新建分组文件夹弹窗
+function openAddGroupFolder() {
+  newGroupParentId.value = null;
+  newGroupIsFolder.value = true;
+  showAddGroup.value = true;
+}
+
+// 打开新建普通分组弹窗
+function openAddGroup() {
+  newGroupParentId.value = null;
+  newGroupIsFolder.value = false;
+  showAddGroup.value = true;
+}
 
 // 监听弹窗打开
 watch(showAddCollection, async (val) => {
@@ -247,10 +294,26 @@ async function createGroup() {
   if (!newGroupName.value.trim()) return;
   
   try {
-    const newGroup = await createGroupInBookmarks(newGroupName.value.trim());
+    const newGroup = await createGroupInBookmarks(
+      newGroupName.value.trim(), 
+      newGroupIsFolder.value,
+      newGroupParentId.value
+    );
     groups.value.push(newGroup);
-    selectedGroupId.value = newGroup.id;
+    
+    // 如果是在分组文件夹下创建，自动展开该文件夹
+    if (newGroupParentId.value) {
+      expandedFolders.value.add(newGroupParentId.value);
+    }
+    
+    // 如果创建的是普通分组，选中它
+    if (!newGroupIsFolder.value) {
+      selectedGroupId.value = newGroup.id;
+    }
+    
     newGroupName.value = '';
+    newGroupIsFolder.value = false;
+    newGroupParentId.value = null;
     showAddGroup.value = false;
   } catch (e) {
     console.error('Failed to create group:', e);
@@ -260,17 +323,35 @@ async function createGroup() {
 
 // 删除分组
 async function deleteGroup(id: string) {
-  if (confirm('确定删除这个分组吗？分组内的集合也会被删除。')) {
+  const group = groups.value.find(g => g.id === id);
+  const message = group?.isFolder 
+    ? '确定删除这个分组文件夹吗？文件夹内的子分组也会被删除。'
+    : '确定删除这个分组吗？分组内的集合也会被删除。';
+    
+  if (confirm(message)) {
     try {
+      // 如果是分组文件夹，先递归删除子分组
+      if (group?.isFolder) {
+        const childGroups = getChildGroups(id);
+        for (const child of childGroups) {
+          await deleteGroupInBookmarks(child.id);
+          collections.value = collections.value.filter(c => c.groupId !== child.id);
+          groups.value = groups.value.filter(g => g.id !== child.id);
+        }
+      }
+      
       await deleteGroupInBookmarks(id);
       collections.value = collections.value.filter(c => c.groupId !== id);
       groups.value = groups.value.filter(g => g.id !== id);
+      
       if (selectedGroupId.value === id) {
-        selectedGroupId.value = groups.value[0]?.id || '';
+        // 选择第一个可用的普通分组
+        const firstGroup = groups.value.find(g => !g.isFolder);
+        selectedGroupId.value = firstGroup?.id || '';
       }
-    } catch (e) {
+    } catch (e: any) {
       console.error('Failed to delete group:', e);
-      alert('删除分组失败');
+      alert(e.message || '删除分组失败');
     }
   }
 }
@@ -285,7 +366,7 @@ function startEditGroup(group: Group) {
 async function saveGroupName(group: Group) {
   if (editingName.value.trim()) {
     try {
-      await updateGroupInBookmarks(group.id, editingName.value.trim());
+      await updateGroupInBookmarks(group.id, editingName.value.trim(), group.isFolder);
       group.name = editingName.value.trim();
     } catch (e) {
       console.error('Failed to update group name:', e);
@@ -299,50 +380,142 @@ function onGroupDragStart(groupId: string, event: DragEvent) {
   draggedGroup.value = groupId;
   if (event.dataTransfer) {
     event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', groupId);
   }
 }
 
 // 分组拖拽经过
 function onGroupDragOver(groupId: string, event: DragEvent) {
   if (!draggedGroup.value || draggedGroup.value === groupId) return;
+  
+  const draggedGroupData = groups.value.find(g => g.id === draggedGroup.value);
+  const targetGroup = groups.value.find(g => g.id === groupId);
+  
+  if (!draggedGroupData || !targetGroup) return;
+  
+  // 不允许将分组拖入自己的子分组
+  if (targetGroup.parentId === draggedGroup.value) return;
+  
+  // 分组文件夹只能在顶级排序，不能拖入其他文件夹
+  if (draggedGroupData.isFolder && targetGroup.parentId !== null) return;
+  
   event.preventDefault();
   dragOverGroupId.value = groupId;
+  
+  // 判断操作类型
+  if (targetGroup.isFolder && !draggedGroupData.isFolder && draggedGroupData.parentId !== groupId) {
+    dragOverGroupAction.value = 'move-into';
+  } else {
+    dragOverGroupAction.value = 'sort';
+  }
 }
 
-// 分组放置（排序）
+// 分组放置（排序或移入文件夹）
 async function onGroupDrop(targetGroupId: string, event: DragEvent) {
   event.preventDefault();
   
   if (!draggedGroup.value || draggedGroup.value === targetGroupId) {
-    draggedGroup.value = null;
-    dragOverGroupId.value = null;
+    resetGroupDragState();
     return;
   }
   
-  const sourceIndex = groups.value.findIndex(g => g.id === draggedGroup.value);
-  const targetIndex = groups.value.findIndex(g => g.id === targetGroupId);
+  const draggedGroupData = groups.value.find(g => g.id === draggedGroup.value);
+  const targetGroup = groups.value.find(g => g.id === targetGroupId);
   
-  if (sourceIndex > -1 && targetIndex > -1) {
-    const movedGroupId = draggedGroup.value;
-    const [movedGroup] = groups.value.splice(sourceIndex, 1);
-    groups.value.splice(targetIndex, 0, movedGroup);
-    
-    // 同步到书签
-    try {
-      await moveGroupToIndex(movedGroupId, targetIndex);
-    } catch (e) {
-      console.error('Failed to sync group order to bookmarks:', e);
-    }
+  if (!draggedGroupData || !targetGroup) {
+    resetGroupDragState();
+    return;
   }
   
+  try {
+    // 情况1: 普通分组拖入分组文件夹
+    if (targetGroup.isFolder && !draggedGroupData.isFolder && draggedGroupData.parentId !== targetGroupId) {
+      await moveGroupInBookmarks(draggedGroup.value, targetGroupId);
+      draggedGroupData.parentId = targetGroupId;
+      expandedFolders.value.add(targetGroupId);
+    }
+    // 情况2: 同级排序（都在顶级或都在同一文件夹内）
+    else if (draggedGroupData.parentId === targetGroup.parentId) {
+      await reorderGroups(draggedGroupData, targetGroup);
+    }
+    // 情况3: 从文件夹内拖到顶级分组位置（移出并排序）
+    else if (draggedGroupData.parentId !== null && targetGroup.parentId === null && !targetGroup.isFolder) {
+      await moveGroupInBookmarks(draggedGroup.value, null);
+      draggedGroupData.parentId = null;
+      await reorderGroups(draggedGroupData, targetGroup);
+    }
+  } catch (e) {
+    console.error('Failed to move/reorder group:', e);
+  }
+  
+  resetGroupDragState();
+}
+
+// 重新排序分组
+async function reorderGroups(draggedGroupData: Group, targetGroup: Group) {
+  const parentId = draggedGroupData.parentId;
+  
+  // 获取同级分组列表
+  const siblings = parentId === null 
+    ? groups.value.filter(g => g.parentId === null)
+    : groups.value.filter(g => g.parentId === parentId);
+  
+  const sourceIndex = siblings.findIndex(g => g.id === draggedGroupData.id);
+  const targetIndex = siblings.findIndex(g => g.id === targetGroup.id);
+  
+  if (sourceIndex === -1 || targetIndex === -1 || sourceIndex === targetIndex) return;
+  
+  // 更新本地数组顺序
+  const globalSourceIndex = groups.value.findIndex(g => g.id === draggedGroupData.id);
+  const globalTargetIndex = groups.value.findIndex(g => g.id === targetGroup.id);
+  
+  if (globalSourceIndex > -1 && globalTargetIndex > -1) {
+    const [movedGroup] = groups.value.splice(globalSourceIndex, 1);
+    groups.value.splice(globalTargetIndex, 0, movedGroup);
+  }
+  
+  // 同步到书签 - 计算在父级内的新位置
+  const newIndex = targetIndex > sourceIndex ? targetIndex : targetIndex;
+  await moveGroupToPosition(draggedGroupData.id, parentId, newIndex);
+}
+
+// 移动分组到指定位置
+async function moveGroupToPosition(groupId: string, parentId: string | null, index: number) {
+  try {
+    if (parentId === null) {
+      await moveGroupToIndex(groupId, index);
+    } else {
+      // 在文件夹内移动
+      await browser.bookmarks.move(groupId, { parentId, index });
+    }
+  } catch (e) {
+    console.error('Failed to move group to position:', e);
+  }
+}
+
+// 重置拖拽状态
+function resetGroupDragState() {
   draggedGroup.value = null;
   dragOverGroupId.value = null;
+  dragOverGroupAction.value = null;
+}
+
+// 将分组移出文件夹到顶级
+async function moveGroupToRoot(groupId: string) {
+  const group = groups.value.find(g => g.id === groupId);
+  if (!group || !group.parentId) return;
+  
+  try {
+    await moveGroupInBookmarks(groupId, null);
+    group.parentId = null;
+  } catch (e) {
+    console.error('Failed to move group to root:', e);
+  }
 }
 
 // 分组拖拽结束
 function onGroupDragEnd() {
-  draggedGroup.value = null;
-  dragOverGroupId.value = null;
+  resetGroupDragState();
 }
 
 // 创建新集合
@@ -912,64 +1085,168 @@ function getFaviconUrl(url: string, favicon: string): string {
           {{ showGroups ? '▶' : '◀' }}
         </button>
         <h2 v-if="showGroups">分组</h2>
-        <button v-if="showGroups" class="btn-add-group" @click="showAddGroup = true">+</button>
+        <div v-if="showGroups" class="header-buttons">
+          <button class="btn-add-folder" @click="openAddGroupFolder" title="新建分组文件夹">📁+</button>
+          <button class="btn-add-group" @click="openAddGroup" title="新建分组">+</button>
+        </div>
       </div>
       
       <!-- 展开时的分组列表 -->
       <div v-if="showGroups" class="groups-list">
-        <div
-          v-for="group in groups"
-          :key="group.id"
-          class="group-item"
-          :class="{ 
-            active: selectedGroupId === group.id,
-            'drag-over-group': dragOverGroupId === group.id,
-            'dragging-group': draggedGroup === group.id
-          }"
-          draggable="true"
-          @click="selectedGroupId = group.id"
-          @dragstart="onGroupDragStart(group.id, $event)"
-          @dragover="onGroupDragOver(group.id, $event)"
-          @dragleave="dragOverGroupId = null"
-          @drop="onGroupDrop(group.id, $event)"
-          @dragend="onGroupDragEnd"
-        >
-          <template v-if="editingGroupId === group.id">
-            <input
-              v-model="editingName"
-              type="text"
-              class="edit-input"
-              @keyup.enter="saveGroupName(group)"
-              @blur="saveGroupName(group)"
-              @click.stop
-              autofocus
-            />
+        <template v-for="group in topLevelGroups" :key="group.id">
+          <!-- 分组文件夹 -->
+          <template v-if="group.isFolder">
+            <div
+              class="group-folder-item"
+              :class="{ 
+                'expanded': expandedFolders.has(group.id),
+                'drag-over-move-into': dragOverGroupId === group.id && dragOverGroupAction === 'move-into',
+                'drag-over-sort': dragOverGroupId === group.id && dragOverGroupAction === 'sort',
+                'dragging-group': draggedGroup === group.id
+              }"
+              draggable="true"
+              @dragstart="onGroupDragStart(group.id, $event)"
+              @dragover="onGroupDragOver(group.id, $event)"
+              @dragleave="dragOverGroupId = null; dragOverGroupAction = null"
+              @drop="onGroupDrop(group.id, $event)"
+              @dragend="onGroupDragEnd"
+            >
+              <div class="folder-header" @click="toggleFolderExpand(group.id)">
+                <span class="folder-icon">{{ expandedFolders.has(group.id) ? '📂' : '📁' }}</span>
+                <template v-if="editingGroupId === group.id">
+                  <input
+                    v-model="editingName"
+                    type="text"
+                    class="edit-input"
+                    @keyup.enter="saveGroupName(group)"
+                    @blur="saveGroupName(group)"
+                    @click.stop
+                    autofocus
+                  />
+                </template>
+                <template v-else>
+                  <span class="group-name" @dblclick.stop="startEditGroup(group)">{{ group.name }}</span>
+                </template>
+                <button class="btn-add-subgroup" @click.stop="openAddSubGroup(group.id)" title="添加子分组">+</button>
+                <button class="btn-delete-group" @click.stop="deleteGroup(group.id)">×</button>
+              </div>
+              
+              <!-- 子分组列表 -->
+              <div v-if="expandedFolders.has(group.id)" class="sub-groups-list">
+                <div
+                  v-for="subGroup in getChildGroups(group.id)"
+                  :key="subGroup.id"
+                  class="group-item sub-group"
+                  :class="{ 
+                    active: selectedGroupId === subGroup.id,
+                    'drag-over-sort': dragOverGroupId === subGroup.id && dragOverGroupAction === 'sort',
+                    'dragging-group': draggedGroup === subGroup.id
+                  }"
+                  draggable="true"
+                  @click="selectedGroupId = subGroup.id"
+                  @dragstart="onGroupDragStart(subGroup.id, $event)"
+                  @dragover="onGroupDragOver(subGroup.id, $event)"
+                  @dragleave="dragOverGroupId = null; dragOverGroupAction = null"
+                  @drop="onGroupDrop(subGroup.id, $event)"
+                  @dragend="onGroupDragEnd"
+                >
+                  <template v-if="editingGroupId === subGroup.id">
+                    <input
+                      v-model="editingName"
+                      type="text"
+                      class="edit-input"
+                      @keyup.enter="saveGroupName(subGroup)"
+                      @blur="saveGroupName(subGroup)"
+                      @click.stop
+                      autofocus
+                    />
+                  </template>
+                  <template v-else>
+                    <span class="group-name" @dblclick.stop="startEditGroup(subGroup)">{{ subGroup.name }}</span>
+                    <span class="group-count">{{ collections.filter(c => c.groupId === subGroup.id).length }}</span>
+                  </template>
+                  <button class="btn-move-out" @click.stop="moveGroupToRoot(subGroup.id)" title="移出文件夹">↗</button>
+                  <button class="btn-delete-group" @click.stop="deleteGroup(subGroup.id)">×</button>
+                </div>
+                <div v-if="getChildGroups(group.id).length === 0" class="empty-folder">
+                  拖拽分组到此处或点击 + 添加
+                </div>
+              </div>
+            </div>
           </template>
+          
+          <!-- 普通分组 -->
           <template v-else>
-            <span class="group-name" @dblclick.stop="startEditGroup(group)">{{ group.name }}</span>
-            <span class="group-count">{{ collections.filter(c => c.groupId === group.id).length }}</span>
+            <div
+              class="group-item"
+              :class="{ 
+                active: selectedGroupId === group.id,
+                'drag-over-sort': dragOverGroupId === group.id && dragOverGroupAction === 'sort',
+                'dragging-group': draggedGroup === group.id
+              }"
+              draggable="true"
+              @click="selectedGroupId = group.id"
+              @dragstart="onGroupDragStart(group.id, $event)"
+              @dragover="onGroupDragOver(group.id, $event)"
+              @dragleave="dragOverGroupId = null; dragOverGroupAction = null"
+              @drop="onGroupDrop(group.id, $event)"
+              @dragend="onGroupDragEnd"
+            >
+              <template v-if="editingGroupId === group.id">
+                <input
+                  v-model="editingName"
+                  type="text"
+                  class="edit-input"
+                  @keyup.enter="saveGroupName(group)"
+                  @blur="saveGroupName(group)"
+                  @click.stop
+                  autofocus
+                />
+              </template>
+              <template v-else>
+                <span class="group-name" @dblclick.stop="startEditGroup(group)">{{ group.name }}</span>
+                <span class="group-count">{{ collections.filter(c => c.groupId === group.id).length }}</span>
+              </template>
+              <button class="btn-delete-group" @click.stop="deleteGroup(group.id)">×</button>
+            </div>
           </template>
-          <button class="btn-delete-group" @click.stop="deleteGroup(group.id)">×</button>
-        </div>
+        </template>
         
-        <div v-if="groups.length === 0" class="empty-groups">
+        <div v-if="topLevelGroups.length === 0" class="empty-groups">
           点击 + 创建分组
         </div>
       </div>
       
       <!-- 折叠时的分组图标列表 -->
       <div v-if="!showGroups" class="groups-list-collapsed">
-        <div
-          v-for="group in groups"
-          :key="group.id"
-          class="group-icon"
-          :class="{ active: selectedGroupId === group.id }"
-          :title="group.name"
-          @click="selectedGroupId = group.id"
-        >
-          {{ group.name.charAt(0).toUpperCase() }}
-        </div>
-        <button class="btn-add-group-collapsed" @click="showAddGroup = true" title="新建分组">+</button>
+        <template v-for="group in topLevelGroups" :key="group.id">
+          <template v-if="group.isFolder">
+            <div class="folder-icon-collapsed" :title="group.name + ' (文件夹)'">
+              📁
+            </div>
+            <div
+              v-for="subGroup in getChildGroups(group.id)"
+              :key="subGroup.id"
+              class="group-icon sub-group-icon"
+              :class="{ active: selectedGroupId === subGroup.id }"
+              :title="subGroup.name"
+              @click="selectedGroupId = subGroup.id"
+            >
+              {{ subGroup.name.charAt(0).toUpperCase() }}
+            </div>
+          </template>
+          <template v-else>
+            <div
+              class="group-icon"
+              :class="{ active: selectedGroupId === group.id }"
+              :title="group.name"
+              @click="selectedGroupId = group.id"
+            >
+              {{ group.name.charAt(0).toUpperCase() }}
+            </div>
+          </template>
+        </template>
+        <button class="btn-add-group-collapsed" @click="openAddGroup" title="新建分组">+</button>
       </div>
     </aside>
 
@@ -997,16 +1274,16 @@ function getFaviconUrl(url: string, favicon: string): string {
     <Teleport to="body">
       <div v-if="showAddGroup" class="modal-overlay" @click.self="showAddGroup = false">
         <div class="modal" @click.stop>
-          <h3>新建分组</h3>
+          <h3>{{ newGroupIsFolder ? '新建分组文件夹' : (newGroupParentId ? '新建子分组' : '新建分组') }}</h3>
           <input
             ref="newGroupInput"
             v-model="newGroupName"
             type="text"
-            placeholder="分组名称"
+            :placeholder="newGroupIsFolder ? '文件夹名称' : '分组名称'"
             @keyup.enter="createGroup"
           />
           <div class="modal-actions">
-            <button class="btn-secondary" @click="showAddGroup = false">取消</button>
+            <button class="btn-secondary" @click="showAddGroup = false; newGroupParentId = null; newGroupIsFolder = false">取消</button>
             <button class="btn-primary" @click="createGroup">创建</button>
           </div>
         </div>
@@ -1121,6 +1398,241 @@ function getFaviconUrl(url: string, favicon: string): string {
   background: rgba(166, 227, 161, 0.25);
 }
 
+.header-buttons {
+  display: flex;
+  gap: 0.3rem;
+}
+
+.btn-add-folder {
+  background: rgba(249, 226, 175, 0.15);
+  border: none;
+  color: #f9e2af;
+  cursor: pointer;
+  padding: 0.3rem 0.5rem;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  transition: all 0.2s;
+}
+
+.btn-add-folder:hover {
+  background: rgba(249, 226, 175, 0.25);
+}
+
+/* 分组文件夹样式 */
+.group-folder-item {
+  margin-bottom: 0.5rem;
+  border-radius: 10px;
+  background: linear-gradient(135deg, rgba(249, 226, 175, 0.05) 0%, rgba(147, 153, 178, 0.05) 100%);
+  border: 1px solid rgba(249, 226, 175, 0.15);
+  transition: all 0.2s;
+  overflow: hidden;
+}
+
+.group-folder-item.expanded {
+  background: linear-gradient(135deg, rgba(249, 226, 175, 0.08) 0%, rgba(147, 153, 178, 0.06) 100%);
+  border-color: rgba(249, 226, 175, 0.25);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+.group-folder-item.drag-over-move-into {
+  border-color: #a6e3a1;
+  background: linear-gradient(135deg, rgba(166, 227, 161, 0.2) 0%, rgba(166, 227, 161, 0.1) 100%);
+  box-shadow: 0 0 16px rgba(166, 227, 161, 0.3);
+  transform: scale(1.02);
+}
+
+.group-folder-item.drag-over-sort {
+  border-color: #89b4fa;
+  border-top-width: 3px;
+  background: linear-gradient(135deg, rgba(137, 180, 250, 0.1) 0%, rgba(249, 226, 175, 0.05) 100%);
+}
+
+.group-folder-item.dragging-group {
+  opacity: 0.5;
+}
+
+.folder-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.7rem 0.6rem;
+  cursor: pointer;
+  border-radius: 9px;
+  transition: all 0.2s;
+}
+
+.folder-header:hover {
+  background: rgba(249, 226, 175, 0.1);
+}
+
+.folder-icon {
+  font-size: 1.1rem;
+  flex-shrink: 0;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.2));
+}
+
+.folder-header .group-name {
+  color: #f9e2af;
+  font-weight: 500;
+}
+
+.btn-add-subgroup {
+  background: rgba(137, 180, 250, 0.15);
+  border: none;
+  color: #89b4fa;
+  cursor: pointer;
+  padding: 0.15rem 0.4rem;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  opacity: 0;
+  transition: all 0.2s;
+  margin-left: auto;
+}
+
+.folder-header:hover .btn-add-subgroup {
+  opacity: 1;
+}
+
+.btn-add-subgroup:hover {
+  background: rgba(137, 180, 250, 0.25);
+}
+
+.sub-groups-list {
+  padding: 0.4rem 0.4rem 0.6rem 0.6rem;
+  margin-top: 0.2rem;
+  background: rgba(0, 0, 0, 0.15);
+  border-radius: 0 0 8px 8px;
+  position: relative;
+}
+
+/* 左侧装饰线 */
+.sub-groups-list::before {
+  content: '';
+  position: absolute;
+  left: 0.9rem;
+  top: 0.4rem;
+  bottom: 0.6rem;
+  width: 2px;
+  background: linear-gradient(180deg, rgba(137, 180, 250, 0.4) 0%, rgba(137, 180, 250, 0.1) 100%);
+  border-radius: 1px;
+}
+
+.sub-group {
+  margin-left: 1rem;
+  margin-bottom: 0.25rem;
+  padding: 0.55rem 0.6rem;
+  background: rgba(147, 153, 178, 0.06);
+  border: 1px solid rgba(147, 153, 178, 0.1);
+  border-radius: 6px;
+  position: relative;
+  transition: all 0.2s;
+}
+
+/* 连接线 */
+.sub-group::before {
+  content: '';
+  position: absolute;
+  left: -0.6rem;
+  top: 50%;
+  width: 0.5rem;
+  height: 2px;
+  background: rgba(137, 180, 250, 0.3);
+}
+
+.sub-group:hover {
+  background: rgba(137, 180, 250, 0.1);
+  border-color: rgba(137, 180, 250, 0.25);
+}
+
+.sub-group.active {
+  background: rgba(137, 180, 250, 0.15);
+  border-color: rgba(137, 180, 250, 0.4);
+  box-shadow: 0 0 8px rgba(137, 180, 250, 0.15);
+}
+
+.sub-group.active::before {
+  background: #89b4fa;
+}
+
+.sub-group.drag-over-group {
+  border-color: #a6e3a1;
+  background: rgba(166, 227, 161, 0.15);
+}
+
+.sub-group.dragging-group {
+  opacity: 0.4;
+}
+
+.sub-group .group-name {
+  font-size: 0.85rem;
+}
+
+.sub-group .group-count {
+  font-size: 0.7rem;
+  padding: 0.1rem 0.35rem;
+}
+
+.empty-folder {
+  color: #6c7086;
+  font-size: 0.75rem;
+  text-align: center;
+  padding: 1rem 0.5rem;
+  font-style: italic;
+  border: 1px dashed rgba(137, 180, 250, 0.2);
+  border-radius: 6px;
+  margin: 0.3rem 0 0 1rem;
+  background: rgba(137, 180, 250, 0.03);
+}
+
+.btn-move-out {
+  background: rgba(137, 180, 250, 0.1);
+  border: none;
+  color: #89b4fa;
+  cursor: pointer;
+  font-size: 0.8rem;
+  padding: 0.15rem 0.35rem;
+  border-radius: 4px;
+  opacity: 0;
+  transition: all 0.2s;
+}
+
+.group-item:hover .btn-move-out,
+.sub-group:hover .btn-move-out {
+  opacity: 1;
+}
+
+.btn-move-out:hover {
+  background: rgba(137, 180, 250, 0.2);
+  color: #b4befe;
+}
+
+.folder-icon-collapsed {
+  width: 32px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1rem;
+  color: #f9e2af;
+  opacity: 0.8;
+  margin-top: 0.3rem;
+}
+
+.sub-group-icon {
+  width: 26px;
+  height: 26px;
+  font-size: 0.7rem;
+  margin-left: 6px;
+  background: rgba(137, 180, 250, 0.1);
+  border-left: 2px solid rgba(137, 180, 250, 0.4);
+  border-radius: 0 5px 5px 0;
+}
+
+.sub-group-icon.active {
+  background: rgba(137, 180, 250, 0.25);
+  border-left-color: #89b4fa;
+}
+
 /* 左侧标签列表 */
 .open-tabs-list {
   display: flex;
@@ -1205,10 +1717,17 @@ function getFaviconUrl(url: string, favicon: string): string {
   cursor: grabbing;
 }
 
-.group-item.drag-over-group {
-  border-color: #a6e3a1;
-  background: rgba(166, 227, 161, 0.15);
-  box-shadow: 0 0 12px rgba(166, 227, 161, 0.2);
+.group-item.drag-over-sort {
+  border-color: #89b4fa;
+  border-top: 3px solid #89b4fa;
+  background: rgba(137, 180, 250, 0.15);
+  box-shadow: 0 -2px 8px rgba(137, 180, 250, 0.2);
+}
+
+.sub-group.drag-over-sort {
+  border-color: #89b4fa;
+  border-top: 3px solid #89b4fa;
+  background: rgba(137, 180, 250, 0.15);
 }
 
 .group-name {
