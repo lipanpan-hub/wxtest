@@ -1167,6 +1167,16 @@ function getFaviconUrl(url: string, favicon: string): string {
   }
 }
 
+// 格式化 URL 显示（只显示域名和路径）
+function formatUrl(url: string): string {
+  try {
+    const urlObj = new URL(url);
+    const path = urlObj.pathname === '/' ? '' : urlObj.pathname;
+    return urlObj.hostname + path;
+  } catch {
+    return url;
+  }
+}
 
 </script>
 
@@ -1282,11 +1292,13 @@ function getFaviconUrl(url: string, favicon: string): string {
               @drop="onTabDrop(collection.id, tab.id, $event)"
               @dragend="onDragEnd"
             >
-              <img
-                :src="getFaviconUrl(tab.url, tab.favicon)"
-                class="tab-favicon"
-                @error="($event.target as HTMLImageElement).style.display = 'none'"
-              />
+              <div class="tab-icon-wrapper">
+                <img
+                  :src="getFaviconUrl(tab.url, tab.favicon)"
+                  class="tab-favicon"
+                  @error="($event.target as HTMLImageElement).style.display = 'none'"
+                />
+              </div>
               <template v-if="editingTabId === tab.id">
                 <input
                   v-model="editingName"
@@ -1299,7 +1311,10 @@ function getFaviconUrl(url: string, favicon: string): string {
                 />
               </template>
               <template v-else>
-                <span class="tab-title" @click="openTab(tab.url)" :title="tab.url">{{ tab.title }}</span>
+                <div class="tab-info" @click="openTab(tab.url)">
+                  <span class="tab-title" :title="tab.title">{{ tab.title }}</span>
+                  <span class="tab-url" :title="tab.url">{{ formatUrl(tab.url) }}</span>
+                </div>
               </template>
               <div class="tab-actions">
                 <button class="btn-edit-tab" @click.stop="startEditTab(collection.id, tab)" title="编辑">✏️</button>
@@ -2445,26 +2460,27 @@ function getFaviconUrl(url: string, favicon: string): string {
 .tabs-list {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
-  gap: 0.4rem;
+  gap: 0.5rem;
 }
 
 .tab-item {
   display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.5rem;
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.03);
+  align-items: flex-start;
+  gap: 0.6rem;
+  padding: 0.6rem 0.7rem;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.02);
   cursor: grab;
   transition: all 0.15s ease;
-  border: 1px solid transparent;
+  border: 1px solid rgba(255, 255, 255, 0.04);
   min-width: 0;
   max-width: 100%;
   overflow: hidden;
 }
 
 .tab-item:hover {
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.08);
 }
 
 .tab-item:active {
@@ -2480,25 +2496,53 @@ function getFaviconUrl(url: string, favicon: string): string {
   background: rgba(249, 226, 175, 0.15);
 }
 
-.tab-favicon {
-  width: 16px;
-  height: 16px;
+.tab-icon-wrapper {
   flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 2px;
+}
+
+.tab-favicon {
+  width: 18px;
+  height: 18px;
+  border-radius: 3px;
+}
+
+.tab-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+  cursor: pointer;
 }
 
 .tab-title {
-  flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 0.85rem;
-  cursor: pointer;
+  font-size: 0.82rem;
+  font-weight: 450;
   color: #cdd6f4;
-  min-width: 0;
+  line-height: 1.3;
 }
 
-.tab-title:hover {
+.tab-info:hover .tab-title {
   color: #89b4fa;
+}
+
+.tab-url {
+  font-size: 0.68rem;
+  color: #585b70;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.2;
+  letter-spacing: 0.01em;
 }
 
 .tab-edit-input {
